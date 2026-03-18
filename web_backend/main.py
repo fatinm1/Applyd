@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import threading
 from typing import Any, Optional
 
@@ -19,7 +20,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from agent import REPOS, run_scan_cycle_and_apply
 from config import config
-from matcher import JobMatcher, generate_cover_letter
+from matcher import JobMatcher, generate_cover_letter, _fallback_cover_letter
 from parser import Job, JobParser
 from watcher import GitHubWatcher
 from store import JobStore
@@ -320,6 +321,13 @@ def demo_run(payload: DemoRunRequest):
     """
     sample_per_source = max(int(payload.sample_per_source or 0), 1)
     body_excerpt_chars = max(int(payload.body_excerpt_chars or 0), 0)
+    # Independent cap so the cover letter preview always looks substantial.
+    cover_letter_excerpt_chars = max(min(body_excerpt_chars * 3, 1600), 300) if body_excerpt_chars else 900
+
+    # Demo-only compilation simulation:
+    # - If tailoring is enabled, approval would attempt to compile with pdflatex.
+    # - We do NOT compile in this endpoint.
+    pdflatex_available = shutil.which(config.RESUME_TEX_COMPILER) is not None
 
     watcher = GitHubWatcher(token=config.GITHUB_TOKEN)
     parser = JobParser()
@@ -341,6 +349,29 @@ def demo_run(payload: DemoRunRequest):
                 continue
 
             h_score, h_reasons = matcher._heuristic_score(job)
+
+            cover_letter_excerpt = _fallback_cover_letter(job)[:cover_letter_excerpt_chars]
+
+            # Resume tailoring simulation:
+            # - On approval, real backend compiles LaTeX (if available) and caches a per-job PDF.
+            # - In this demo endpoint we only describe the expected behavior.
+            if config.TAILORED_RESUME_ENABLED:
+                expected_tailored_resume_path = f"{config.TAILORED_RESUME_DIR}/{job.id}/resume.pdf"
+                if pdflatex_available:
+                    expected_attachment_path = expected_tailored_resume_path
+                    tailoring_note = (
+                        "Real flow would compile LaTeX with pdflatex and cache the result, then Phase 2 attaches/uploads the cached PDF."
+                    )
+                else:
+                    expected_attachment_path = config.RESUME_PATH
+                    tailoring_note = (
+                        "Tailoring is enabled but pdflatex is not available, so real flow would fall back to the base resume PDF."
+                    )
+            else:
+                expected_tailored_resume_path = None
+                expected_attachment_path = config.RESUME_PATH
+                tailoring_note = "Tailoring is disabled, so real flow attaches/uploads the base resume at `RESUME_PATH`."
+
             parsed_jobs.append(
                 {
                     "job_id": job.id,
@@ -353,6 +384,15 @@ def demo_run(payload: DemoRunRequest):
                     "match_reasons": h_reasons,
                     "estimated_auto_apply_handler": _estimate_auto_apply_handler(job.apply_url),
                     "body_excerpt": (job.body or "")[:body_excerpt_chars] if body_excerpt_chars else "",
+                    "simulated_cover_letter_excerpt": cover_letter_excerpt,
+                    "resume_tailer_simulation": {
+                        "tailoring_enabled": bool(config.TAILORED_RESUME_ENABLED),
+                        "pdflatex_available": bool(pdflatex_available),
+                        "resume_tex_path": config.RESUME_TEX_PATH,
+                        "tailored_resume_cache_path": expected_tailored_resume_path,
+                        "expected_attachment_path": expected_attachment_path,
+                        "note": tailoring_note,
+                    },
                 }
             )
 
@@ -370,6 +410,12 @@ def demo_run(payload: DemoRunRequest):
             "resume_tex_compiler": config.RESUME_TEX_COMPILER,
             "resume_tailer_dir": config.TAILORED_RESUME_DIR,
             "scoring_mode": "heuristic_only",
+            "safety": {
+                "anthropic_calls": False,
+                "no_email_sent": True,
+                "no_playwright_used": True,
+                "no_resume_compilation": True,
+            },
             "phase2": {
                 "agent_enabled": bool(agent_settings.get("agent_enabled", True)),
                 "auto_apply_enabled": bool(agent_settings.get("auto_apply_enabled", False)),
