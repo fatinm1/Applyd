@@ -32,6 +32,18 @@ cp .env.example .env
 export $(cat .env | xargs)
 ```
 
+### 4. Database (SQLite vs MySQL)
+By default, Applyd uses local SQLite (`jobs.db`).
+
+If you deploy on Railway (or anywhere with ephemeral disks), switch to MySQL:
+1. In `.env`, set `DB_BACKEND=mysql` and fill in:
+   - `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`
+2. Run a one-time migration from your local SQLite history:
+```bash
+python scripts/migrate_sqlite_to_mysql.py --sqlite-path jobs.db
+```
+3. Re-deploy the backend with the same MySQL env vars.
+
 **GitHub token**: Create at https://github.com/settings/tokens
 No special scopes needed for public repos — the token just raises rate limits.
 
@@ -111,7 +123,7 @@ job_agent/
 ├── watcher.py        # GitHub README/Issues polling
 ├── parser.py         # Job data model + normalisation
 ├── matcher.py        # Heuristic + Claude scoring, cover letter gen
-├── store.py          # SQLite persistence (jobs.db)
+├── store.py          # Persistence (SQLite or MySQL)
 ├── notifier.py       # Slack + email digests
 ├── applier.py        # Phase 2: Playwright form submission
 ├── review.py         # CLI review tool
@@ -127,6 +139,6 @@ job_agent/
 ## Tips
 
 - **Start with a high threshold (0.75+)** and lower it once you see what Claude catches.
-- **Check `jobs.db`** with any SQLite viewer (TablePlus, DB Browser) for the full history.
+- **Check your DB** (SQLite `jobs.db` or MySQL tables) for the full history.
 - **The first run indexes existing jobs** without notifying — you'll only hear about NEW postings.
 - Add more repos by appending to the `REPOS` list in `agent.py`.

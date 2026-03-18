@@ -10,6 +10,12 @@ from typing import List
 
 @dataclass
 class Config:
+    # ── Database ───────────────────────────────────────────────────────────
+    # Persistence backend for JobStore.
+    # - `sqlite` (default): local `jobs.db`
+    # - `mysql`: connect to a MySQL database (e.g. on Railway)
+    DB_BACKEND: str = os.getenv("DB_BACKEND", "sqlite").lower()
+
     # ── GitHub ─────────────────────────────────────────────────────────────
     # Create a token at https://github.com/settings/tokens (no special scopes needed for public repos)
     GITHUB_TOKEN: str = os.getenv("GITHUB_TOKEN", "")
@@ -71,6 +77,13 @@ class Config:
 
     # ── Storage ────────────────────────────────────────────────────────────
     DB_PATH: str = os.getenv("DB_PATH", "jobs.db")
+
+    # MySQL connection settings (used when DB_BACKEND=mysql)
+    MYSQL_HOST: str = os.getenv("MYSQL_HOST", "127.0.0.1")
+    MYSQL_PORT: int = int(os.getenv("MYSQL_PORT", "3306"))
+    MYSQL_USER: str = os.getenv("MYSQL_USER", "")
+    MYSQL_PASSWORD: str = os.getenv("MYSQL_PASSWORD", "")
+    MYSQL_DATABASE: str = os.getenv("MYSQL_DATABASE", "")
 
     # ── Application (Phase 2 — auto-apply) ────────────────────────────────
     # Leave False until you've reviewed several manual cycles and trust the agent.
