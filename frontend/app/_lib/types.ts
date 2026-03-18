@@ -15,6 +15,8 @@ export type Job = {
   applied_at: string | null;
   created_at: string | null;
   body?: string | null;
+  resume_pdf_path?: string | null;
+  resume_generated_at?: string | null;
 };
 
 export type JobListResponse = {

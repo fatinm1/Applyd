@@ -22,11 +22,12 @@ function scoreToPct(score: number | null | undefined) {
 export default function DashboardPage() {
   const router = useRouter();
 
-  const [pendingJobs, setPendingJobs] = useState<Job[]>([]);
+  const [statusView, setStatusView] = useState<"pending" | "applied">("pending");
+  const [jobs, setJobs] = useState<Job[]>([]);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const selectedJob = useMemo(
-    () => pendingJobs.find((j) => j.id === selectedJobId) ?? null,
-    [pendingJobs, selectedJobId],
+    () => jobs.find((j) => j.id === selectedJobId) ?? null,
+    [jobs, selectedJobId],
   );
 
   const [agentState, setAgentState] = useState<{ agent_enabled: boolean; auto_apply_enabled: boolean } | null>(
@@ -43,10 +44,11 @@ export default function DashboardPage() {
     setLoadingJobs(true);
     setError(null);
     try {
-      const jobsRes = await listJobsApi("pending", 100);
-      const jobs: Job[] = jobsRes.jobs ?? [];
-      setPendingJobs(jobs);
-      setSelectedJobId((prev) => (prev && jobs.some((j) => j.id === prev) ? prev : jobs[0]?.id ?? null));
+      const limit = statusView === "applied" ? 5000 : 100;
+      const jobsRes = await listJobsApi(statusView, limit);
+      const nextJobs: Job[] = jobsRes.jobs ?? [];
+      setJobs(nextJobs);
+      setSelectedJobId((prev) => (prev && nextJobs.some((j) => j.id === prev) ? prev : nextJobs[0]?.id ?? null));
     } catch (err: any) {
       if (err?.status === 401) router.push("/login");
       setError(err?.message ?? "Failed to load jobs");
@@ -69,7 +71,7 @@ export default function DashboardPage() {
     refresh();
     refreshAgentState();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [statusView]);
 
   async function act(action: "approve" | "skip" | "reject", jobId: string) {
     if (actionLoading) return;
@@ -159,18 +161,20 @@ export default function DashboardPage() {
           <section className="cyber-panel cyber-chamfer-sm p-4 overflow-hidden">
             <div className="flex items-center justify-between mb-4">
               <div className="text-xs uppercase tracking-[0.2em] text-[var(--mutedForeground)]">
-                Pending Queue
+                {statusView === "pending" ? "Pending Queue" : "Applied History"}
               </div>
-              <span className="cyber-badge">{pendingJobs.length} jobs</span>
+              <span className="cyber-badge">{jobs.length} jobs</span>
             </div>
 
             {loadingJobs ? (
               <div className="text-sm text-[var(--mutedForeground)]">Scanning...</div>
-            ) : pendingJobs.length === 0 ? (
-              <div className="text-sm text-[var(--mutedForeground)]">No pending jobs right now.</div>
+            ) : jobs.length === 0 ? (
+              <div className="text-sm text-[var(--mutedForeground)]">
+                {statusView === "pending" ? "No pending jobs right now." : "No applied jobs yet."}
+              </div>
             ) : (
               <ul className="space-y-2">
-                {pendingJobs.map((job) => {
+                {jobs.map((job) => {
                   const isSelected = job.id === selectedJobId;
                   return (
                     <li key={job.id}>
@@ -258,52 +262,61 @@ export default function DashboardPage() {
                     </div>
                   )}
 
-                  <button
-                    className="cyber-button cyber-chamfer-sm w-full mt-3"
-                    onClick={() => generateCover(selectedJob.id)}
-                    disabled={coverLoading}
-                  >
-                    {coverLoading ? "GENERATING..." : "GENERATE"}
-                  </button>
+                  {statusView === "pending" ? (
+                    <button
+                      className="cyber-button cyber-chamfer-sm w-full mt-3"
+                      onClick={() => generateCover(selectedJob.id)}
+                      disabled={coverLoading}
+                    >
+                      {coverLoading ? "GENERATING..." : "GENERATE"}
+                    </button>
+                  ) : null}
                 </div>
 
                 <div className="mt-4">
                   <div className="text-xs uppercase tracking-[0.2em] text-[var(--mutedForeground)] mb-2">
                     Actions
                   </div>
+                  {statusView === "applied" ? (
+                    <div className="text-sm text-[var(--mutedForeground)]">
+                      Applied job — details below.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="grid grid-cols-3 gap-2">
+                        <button
+                          className="cyber-button cyber-chamfer-sm"
+                          onClick={() => act("approve", selectedJob.id)}
+                          disabled={actionLoading === selectedJob.id}
+                        >
+                          APPROVE
+                        </button>
+                        <button
+                          className="cyber-button cyber-chamfer-sm cyber-button-ghost"
+                          onClick={() => act("skip", selectedJob.id)}
+                          disabled={actionLoading === selectedJob.id}
+                        >
+                          SKIP
+                        </button>
+                        <button
+                          className="cyber-button cyber-chamfer-sm cyber-button-destructive"
+                          onClick={() => act("reject", selectedJob.id)}
+                          disabled={actionLoading === selectedJob.id}
+                        >
+                          REJECT
+                        </button>
+                      </div>
 
-                  <div className="grid grid-cols-3 gap-2">
-                    <button
-                      className="cyber-button cyber-chamfer-sm"
-                      onClick={() => act("approve", selectedJob.id)}
-                      disabled={actionLoading === selectedJob.id}
-                    >
-                      APPROVE
-                    </button>
-                    <button
-                      className="cyber-button cyber-chamfer-sm cyber-button-ghost"
-                      onClick={() => act("skip", selectedJob.id)}
-                      disabled={actionLoading === selectedJob.id}
-                    >
-                      SKIP
-                    </button>
-                    <button
-                      className="cyber-button cyber-chamfer-sm cyber-button-destructive"
-                      onClick={() => act("reject", selectedJob.id)}
-                      disabled={actionLoading === selectedJob.id}
-                    >
-                      REJECT
-                    </button>
-                  </div>
-
-                  <div className="mt-3">
-                    <input
-                      className="cyber-input"
-                      value={rejectNotes}
-                      onChange={(e) => setRejectNotes(e.target.value)}
-                      placeholder="Reject notes (optional)"
-                    />
-                  </div>
+                      <div className="mt-3">
+                        <input
+                          className="cyber-input"
+                          value={rejectNotes}
+                          onChange={(e) => setRejectNotes(e.target.value)}
+                          placeholder="Reject notes (optional)"
+                        />
+                      </div>
+                    </>
+                  )}
 
                   <div className="mt-3">
                     <a
@@ -315,6 +328,43 @@ export default function DashboardPage() {
                       OPEN APPLY URL
                     </a>
                   </div>
+
+                  {statusView === "applied" ? (
+                    <div className="mt-4 border-t border-[var(--border)] pt-4">
+                      <div className="text-xs uppercase tracking-[0.2em] text-[var(--mutedForeground)] mb-2">
+                        Job description
+                      </div>
+                      <pre
+                        className="whitespace-pre-wrap text-sm leading-relaxed border border-[var(--border)] p-3 cyber-chamfer-sm"
+                        style={{
+                          backgroundColor: "color-mix(in srgb, var(--muted) 55%, transparent)",
+                          maxHeight: 260,
+                          overflow: "auto",
+                        }}
+                      >
+                        {selectedJob.body || "No description stored."}
+                      </pre>
+
+                      <div className="mt-4 text-xs uppercase tracking-[0.2em] text-[var(--mutedForeground)] mb-2">
+                        Resume submitted
+                      </div>
+                      <div
+                        className="text-sm text-[var(--mutedForeground)] border border-[var(--border)] p-3 cyber-chamfer-sm"
+                        style={{ backgroundColor: "color-mix(in srgb, var(--muted) 35%, transparent)" }}
+                      >
+                        <div className="font-mono break-all">
+                          {selectedJob.resume_pdf_path
+                            ? selectedJob.resume_pdf_path
+                            : "No resume_pdf_path recorded."}
+                        </div>
+                        {selectedJob.applied_at ? (
+                          <div className="mt-2 text-xs text-[var(--mutedForeground)]">
+                            Applied at: {new Date(selectedJob.applied_at).toLocaleString()}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </>
             )}
@@ -334,6 +384,18 @@ export default function DashboardPage() {
             </div>
 
             <div className="flex gap-3 flex-wrap">
+              <button
+                className={`cyber-button cyber-chamfer-sm ${statusView === "pending" ? "" : "cyber-button-ghost"}`}
+                onClick={() => setStatusView("pending")}
+              >
+                PENDING
+              </button>
+              <button
+                className={`cyber-button cyber-chamfer-sm ${statusView === "applied" ? "" : "cyber-button-ghost"}`}
+                onClick={() => setStatusView("applied")}
+              >
+                APPLIED
+              </button>
               <button
                 className={`cyber-button cyber-chamfer-sm ${agentState?.agent_enabled ? "" : "cyber-button-ghost"}`}
                 onClick={() => toggleAgent({ agent_enabled: !agentState?.agent_enabled })}
