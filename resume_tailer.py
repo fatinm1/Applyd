@@ -90,7 +90,9 @@ def _compile_tex_to_pdf(tex_text: str, out_dir: str) -> str:
     cmd = config.RESUME_TEX_COMPILER
     passes = max(int(config.RESUME_TEX_PASSES), 1)
 
-    # Compile in the output directory so any aux files stay contained.
+    # Compile inside the output directory so any aux files stay contained.
+    # Avoid using `-output-directory` with relative paths while also setting `cwd`,
+    # because it can cause nested path resolution and pdflatex log/output failures.
     for i in range(passes):
         log.info(f"Compiling tailored resume PDF pass {i + 1}/{passes} for {out_dir}")
         subprocess.run(
@@ -98,8 +100,6 @@ def _compile_tex_to_pdf(tex_text: str, out_dir: str) -> str:
                 cmd,
                 "-interaction=nonstopmode",
                 "-halt-on-error",
-                "-output-directory",
-                out_dir,
                 "resume.tex",
             ],
             cwd=out_dir,
