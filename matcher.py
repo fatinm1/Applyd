@@ -30,6 +30,11 @@ class JobMatcher:
         # ── 1. Fast heuristic pre-filter ─────────────────────────────────
         h_score, h_reasons = self._heuristic_score(job)
 
+        # If we don't have an Anthropic API key configured, never call Claude.
+        # This keeps scans cheap/offline and prevents rate-limit blowups.
+        if not config.ANTHROPIC_API_KEY:
+            return h_score, h_reasons + ["[AI scoring skipped — no ANTHROPIC_API_KEY]"]
+
         if h_score < _HEURISTIC_FLOOR:
             return h_score, h_reasons + ["[skipped AI scoring — heuristic too low]"]
 
