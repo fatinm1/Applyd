@@ -58,6 +58,25 @@ class JobStore:
                     created_at TEXT DEFAULT (datetime('now'))
                 );
 
+                -- Immutable-ish audit trail of what we tried to do on each job.
+                -- This is separate from the mutable `jobs` row so we can keep
+                -- a history of applied attempts (including which resume was used).
+                CREATE TABLE IF NOT EXISTS application_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    job_id TEXT NOT NULL,
+                    company TEXT,
+                    title TEXT,
+                    source TEXT,
+                    apply_url TEXT,
+                    job_body TEXT,
+                    resume_pdf_path TEXT,
+                    cover_letter TEXT,
+                    method TEXT,
+                    status TEXT,
+                    notes TEXT,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
+
                 CREATE TABLE IF NOT EXISTS agent_settings (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -82,6 +101,65 @@ class JobStore:
                 "INSERT OR IGNORE INTO agent_settings (key, value) VALUES (?, ?)",
                 ("auto_apply_enabled", "true" if config.AUTO_APPLY_ENABLED else "false"),
             )
+
+            # Backfill the application log for jobs already marked as `applied`
+            # before this feature was introduced.
+            try:
+                row = conn.execute("SELECT COUNT(*) as c FROM application_log").fetchone()
+                already_logged = int(row["c"]) if row else 0
+            except Exception:
+                already_logged = 0
+
+            # Backfill only jobs that are marked `applied` but missing from `application_log`.
+            missing_rows = conn.execute("""
+                SELECT COUNT(*) as c
+                FROM jobs j
+                WHERE j.status = 'applied'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM application_log al WHERE al.job_id = j.id
+                  )
+            """).fetchone()
+
+            if missing_rows and int(missing_rows["c"]) > 0:
+                applied_rows = conn.execute("""
+                    SELECT id, company, title, source, apply_url, body,
+                           resume_pdf_path, cover_letter, status, notes
+                    FROM jobs
+                    WHERE status = 'applied'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM application_log al WHERE al.job_id = jobs.id
+                      )
+                """).fetchall()
+
+                for r in applied_rows:
+                    # Best-effort method extraction from notes.
+                    notes = r["notes"] or ""
+                    method = ""
+                    if "Applied via " in notes:
+                        method = notes.split("Applied via ", 1)[-1].strip()
+
+                    conn.execute(
+                        """
+                        INSERT INTO application_log (
+                            job_id, company, title, source, apply_url,
+                            job_body, resume_pdf_path, cover_letter,
+                            method, status, notes
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            r["id"],
+                            r["company"] or "",
+                            r["title"] or "",
+                            r["source"] or "",
+                            r["apply_url"] or "",
+                            r["body"] or "",
+                            r["resume_pdf_path"] or "",
+                            r["cover_letter"] or "",
+                            method,
+                            "applied",
+                            notes,
+                        ),
+                    )
 
     def is_repo_indexed(self, repo_key: str) -> bool:
         with self._conn() as conn:
@@ -144,6 +222,46 @@ class JobStore:
                    applied_at = CASE WHEN ? = 'applied' THEN datetime('now') ELSE applied_at END
                    WHERE id = ?""",
                 (status, notes, cover_letter, status, job_id),
+            )
+
+    def log_application(
+        self,
+        job_id: str,
+        *,
+        company: str = "",
+        title: str = "",
+        source: str = "",
+        apply_url: str = "",
+        job_body: str = "",
+        resume_pdf_path: str = "",
+        cover_letter: str = "",
+        method: str = "",
+        status: str = "",
+        notes: str = "",
+    ):
+        """Append a record of an apply attempt."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO application_log (
+                    job_id, company, title, source, apply_url,
+                    job_body, resume_pdf_path, cover_letter,
+                    method, status, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    company,
+                    title,
+                    source,
+                    apply_url,
+                    job_body,
+                    resume_pdf_path,
+                    cover_letter,
+                    method,
+                    status,
+                    notes,
+                ),
             )
 
     def set_job_resume_pdf(self, job_id: str, resume_pdf_path: str):

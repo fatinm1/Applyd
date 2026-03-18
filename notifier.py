@@ -32,6 +32,62 @@ class Notifier:
             log.warning("No notification channel configured. Set SLACK_WEBHOOK_URL or NOTIFY_EMAIL.")
             self._print_digest(matches_sorted)
 
+    def send_apply_notification(
+        self,
+        *,
+        job: Job,
+        status: str,
+        resume_pdf_path: str = "",
+        method: str = "",
+        notes: str = "",
+    ):
+        """
+        Send an email when a job successfully transitions to `status='applied'`.
+
+        We intentionally do not send on failure to avoid notification spam.
+        """
+        if status != "applied":
+            return
+
+        if not config.NOTIFY_EMAIL or not config.GMAIL_APP_PASSWORD:
+            return
+
+        try:
+            safe_resume = (resume_pdf_path or "").strip()
+            resume_file = safe_resume.split("/")[-1] if safe_resume else ""
+            subject = f"✅ Applied: {job.company} — {job.title}"
+
+            job_link = job.apply_url or f"https://github.com/{job.source}"
+            notes_html = f"<p><strong>Notes:</strong> {notes}</p>" if notes else ""
+
+            body_html = f"""
+            <html><body style="font-family:system-ui,sans-serif;color:#111;max-width:720px;margin:0 auto;padding:24px;line-height:1.5">
+              <h2 style="margin-top:0">Application submitted</h2>
+              <p><strong>Company:</strong> {job.company}</p>
+              <p><strong>Role:</strong> {job.title}</p>
+              <p><strong>Method:</strong> {method or 'browser'}</p>
+              <p><strong>Resume used:</strong> {resume_file or '(not recorded)'}
+                 <br><span style="color:#6b7280;font-size:13px">{safe_resume}</span></p>
+              <p><strong>Job link:</strong> <a href="{job_link}">{job_link}</a></p>
+              {notes_html}
+              <p style="color:#6b7280;font-size:12px;margin-top:24px">Sent by Applyd · jobs.db keeps an application log.</p>
+            </body></html>
+            """
+
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = config.NOTIFY_EMAIL
+            msg["To"] = config.NOTIFY_EMAIL
+            msg.attach(MIMEText(body_html, "html"))
+
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(config.NOTIFY_EMAIL, config.GMAIL_APP_PASSWORD)
+                server.send_message(msg)
+
+            log.info("Apply success email sent.")
+        except Exception as e:
+            log.error(f"Apply notification email failed: {e}")
+
     # ── Slack ─────────────────────────────────────────────────────────────
 
     def _send_slack(self, matches: list):

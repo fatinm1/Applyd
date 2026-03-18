@@ -19,6 +19,7 @@ from store import JobStore
 from matcher import generate_cover_letter
 from parser import Job
 from resume_tailer import generate_tailored_resume_pdf
+from notifier import Notifier
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ log = logging.getLogger(__name__)
 def run_auto_apply():
     """Process all approved jobs and attempt to apply."""
     store = JobStore()
+    notifier = Notifier()
     if not store.get_auto_apply_enabled():
         log.info("Auto-apply is disabled via agent settings.")
         return
@@ -54,6 +56,8 @@ def run_auto_apply():
         resume_path = job_row.get("resume_pdf_path") or ""
         if not resume_path:
             resume_path = generate_tailored_resume_pdf(job)
+            # Persist so the application log always records the exact resume used.
+            store.set_job_resume_pdf(job.id, resume_path)
 
         success = False
         method  = "unknown"
@@ -72,12 +76,45 @@ def run_auto_apply():
             continue
 
         if success:
-            store.update_status(job.id, "applied", cover_letter=cover_letter,
-                                notes=f"Applied via {method}")
+            status = "applied"
+            notes = f"Applied via {method}"
+            store.update_status(job.id, status, cover_letter=cover_letter, notes=notes)
             log.info(f"  ✅ Applied: {job.display}")
         else:
-            store.update_status(job.id, "skipped", notes=f"Apply failed via {method}")
+            status = "skipped"
+            notes = f"Apply failed via {method}"
+            store.update_status(job.id, status, notes=notes)
             log.warning(f"  ❌ Failed: {job.display}")
+
+        # Append to application audit log (records job description + resume used).
+        try:
+            store.log_application(
+                job.id,
+                company=job.company,
+                title=job.title,
+                source=job.source,
+                apply_url=job.apply_url or "",
+                job_body=job.body or "",
+                resume_pdf_path=resume_path or "",
+                cover_letter=cover_letter or "",
+                method=method,
+                status=status,
+                notes=notes,
+            )
+        except Exception as e:
+            log.warning(f"Failed to write application log for {job.id}: {e}")
+
+        # Send email on successful apply (only).
+        try:
+            notifier.send_apply_notification(
+                job=job,
+                status=status,
+                resume_pdf_path=resume_path or "",
+                method=method,
+                notes=notes,
+            )
+        except Exception as e:
+            log.warning(f"Failed to send apply notification for {job.id}: {e}")
 
         time.sleep(3)  # Be polite
 
