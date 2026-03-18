@@ -1,0 +1,174 @@
+%-------------------------
+% Fatin Mojumder Resume — Tailored for DriveTime SWE Intern
+% NOTE: Sections wrapped in markers are intentionally replaceable by the agent.
+%-------------------------
+
+\documentclass[letterpaper,10pt]{article}
+\usepackage{lmodern}
+\renewcommand{\normalsize}{\fontsize{10.5}{12.6}\selectfont}
+\normalsize
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{fancyhdr}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\input{glyphtounicode}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+\addtolength{\oddsidemargin}{-0.5in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+
+\urlstyle{same}
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+\pdfgentounicode=1
+
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-2pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{0.97\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{#1} & #2 \\
+      \textit{\small#3} & \textit{\small #4} \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & #2 \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-4pt}}
+
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.15in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\begin{document}
+
+%----------HEADING----------
+\begin{center}
+    \textbf{\Huge \scshape Fatin Mojumder} \\ \vspace{4pt}
+    \small
+    Ellicott City, MD $|$
+    \href{tel:4439802067}{443-980-2067} $|$
+    \href{mailto:fatinm1@umbc.edu}{fatinm1@umbc.edu} \\ \vspace{2pt}
+    \href{https://linkedin.com/in/fatin-mojumder}{LinkedIn: /in/fatin-mojumder} $|$
+    \href{https://github.com/fatinm1}{GitHub: /fatinm1} $|$
+    \href{https://fatin.dev}{Portfolio: fatin.dev}
+\end{center}
+
+%-----------EDUCATION-----------
+\section{Education}
+  \resumeSubHeadingListStart
+    \resumeSubheading
+      {University of Maryland, Baltimore County (UMBC)}{Baltimore, MD}
+      {B.S. in Computer Science}{Expected December 2026}
+      \resumeItemListStart
+        \resumeItem{\textbf{Relevant Coursework:} Data Structures \& Algorithms, Database Management Systems, Computer Networks, Operating Systems, Data Science, Machine Learning}
+      \resumeItemListEnd
+  \resumeSubHeadingListEnd
+
+%-----------TECHNICAL SKILLS (REPLACEABLE)-----------
+%% BEGIN_TECHNICAL_SKILLS
+\section{Technical Skills}
+ \begin{itemize}[leftmargin=0.15in, label={}]
+    \small{\item{
+     \textbf{Languages:}{ Python, SQL, JavaScript/TypeScript, Java, C++, C, Bash/Shell} \\
+     \textbf{Frontend:}{ React, Angular, Next.js, TypeScript, HTML, CSS, Node.js, REST APIs, WebSockets} \\
+     \textbf{Backend \& Databases:}{ FastAPI, Flask, PostgreSQL, MySQL, MongoDB, Redis} \\
+     \textbf{Testing \& DevOps:}{ pytest, Git, GitHub Actions, Docker, Microsoft Azure, CI/CD, Agile} \\
+     \textbf{Data \& Cloud:}{ BigQuery, dbt, Airflow, PostGIS, LangChain, PyTorch}
+    }}
+ \end{itemize}
+%% END_TECHNICAL_SKILLS
+
+%-----------EXPERIENCE-----------
+\section{Experience}
+  \resumeSubHeadingListStart
+
+    \resumeSubheading
+      {JMC Asset Management}{Remote}
+      {Freelance Software Developer}{June 2025 -- Jan 2026}
+      \resumeItemListStart
+        \resumeItem{Designed and deployed a full-stack document review platform using an \textbf{Agile} iterative development cycle, building a \textbf{Flask REST API} with \textbf{JWT authentication} and \textbf{PostgreSQL} schema managing document lifecycle across \textbf{50+} contracts.}
+        \resumeItem{Engineered a multi-step processing pipeline using \textbf{GPT-4} and \textbf{LangChain}; wrote \textbf{unit and integration tests} with \textbf{pytest} to validate clause extraction accuracy and structured output correctness.}
+        \resumeItem{Reduced manual review time \textbf{45 $\rightarrow$ 15 minutes} per document via automation; cut \textbf{API costs by 30\%} through prompt compression and response caching, demonstrating continuous improvement mindset.}
+      \resumeItemListEnd
+
+    \resumeSubheading
+      {UMBC Graduate Admissions Office}{Baltimore, MD}
+      {IT Assistant}{May 2023 -- Dec 2025}
+      \resumeItemListStart
+        \resumeItem{Ingested and processed \textbf{1,000+} student records with \textbf{100\%} accuracy, supporting data integrity for institutional reporting and downstream operations.}
+        \resumeItem{Automated data organization and indexing workflows via \textbf{Bash scripting}, reducing processing time by \textbf{25\%} and enabling consistent, repeatable data handling.}
+        \resumeItem{Ensured secure handling of sensitive institutional data in a compliance-driven environment, demonstrating strong attention to detail and data privacy practices.}
+      \resumeItemListEnd
+
+  \resumeSubHeadingListEnd
+
+%-----------PROJECTS (REPLACEABLE)-----------
+%% BEGIN_PROJECTS
+\section{Projects}
+    \resumeSubHeadingListStart
+
+      \resumeProjectHeading
+          {\textbf{\href{https://github.com/fatinm1/geotrack}{GeoTrack}} $-$ \emph{Full-Stack Web Application} $|$ \small{Next.js, TypeScript, Node.js, HTML, CSS, FastAPI, PostgreSQL, Azure, Docker}}{}
+          \resumeItemListStart
+            \resumeItem{Built a full-stack web application with a \textbf{Next.js/TypeScript} frontend (HTML, CSS) and \textbf{Node.js}-compatible API layer, integrating \textbf{REST} and \textbf{WebSocket} endpoints to serve \textbf{1,000+ simultaneous} real-time data streams.}
+            \resumeItem{Designed a \textbf{PostgreSQL} database schema with spatial extensions and \textbf{Redis pub/sub} pipeline delivering \textbf{500+ updates/sec} at under \textbf{30ms} latency; wrote \textbf{integration tests} validating API correctness across edge cases.}
+            \resumeItem{Managed \textbf{Git} feature branch workflow with pull request reviews; deployed to \textbf{Microsoft Azure}-compatible infrastructure via \textbf{Docker Compose} with automated \textbf{CI/CD} using GitHub Actions.}
+          \resumeItemListEnd
+
+      \resumeProjectHeading
+          {\textbf{\href{https://pacewise-production.up.railway.app/landing}{PaceWise}} $-$ \emph{Full-Stack Analytics Platform} $|$ \small{Python, Node.js, SQL, Next.js, BigQuery, Airflow, Azure, Docker}}{}
+          \resumeItemListStart
+            \resumeItem{Built a full-stack analytics platform with a \textbf{Next.js} frontend and \textbf{Node.js} API layer consuming \textbf{REST} endpoints backed by \textbf{BigQuery}; followed an \textbf{Agile} development cycle with iterative feature delivery and continuous deployment.}
+            \resumeItem{Modeled raw \textbf{SQL} data using \textbf{dbt} with layered staging $\rightarrow$ mart transformations; enforced \textbf{schema contracts and automated data quality tests} on every model, maintaining full data lineage documentation.}
+            \resumeItem{Optimized \textbf{BigQuery} query costs by \textbf{40\%} through date partitioning and clustering; deployed on \textbf{Microsoft Azure}-compatible cloud infrastructure with \textbf{CI/CD pipeline} via GitHub Actions.}
+          \resumeItemListEnd
+
+      \resumeProjectHeading
+          {\textbf{\href{https://github.com/fatinm1/EmbedWatch}{EmbedWatch}} $-$ \emph{Embedded Telemetry System} $|$ \small{C, Python, Bash, Node.js, MQTT, Docker, GitHub Actions}}{}
+          \resumeItemListStart
+            \resumeItem{Built a hardware telemetry system in \textbf{C and Python} collecting sensor data from \textbf{8 I2C/GPIO sources} with under \textbf{2\% CPU overhead}, streaming \textbf{36,000+ events/hour} to a cloud dashboard via \textbf{MQTT}.}
+            \resumeItem{Implemented \textbf{watchdog-based fault detection} using systemd and heartbeat monitoring, automatically restarting failed processes within \textbf{1 second} and achieving \textbf{99.9\% uptime} across 72-hour stress tests.}
+            \resumeItem{Wrote \textbf{automated test scripts} validating sensor readings, fault recovery timing, and restart behavior across \textbf{12+ failure scenarios}; managed releases via \textbf{Git} with \textbf{CI/CD} automation using \textbf{GitHub Actions}.}
+          \resumeItemListEnd
+
+    \resumeSubHeadingListEnd
+%% END_PROJECTS
+
+%-------------------------------------------
+\end{document}
+

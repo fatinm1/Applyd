@@ -16,6 +16,7 @@ from store import JobStore
 from matcher import generate_cover_letter
 from parser import Job
 from config import config
+from resume_tailer import generate_tailored_resume_pdf
 
 store = JobStore()
 
@@ -51,6 +52,24 @@ def cmd_review():
             cmd = input("  > ").strip().lower()
             if cmd in ("a", "approve"):
                 store.update_status(job["id"], "approved")
+
+                # Generate and cache a tailored resume PDF for this job.
+                try:
+                    j = Job(
+                        id=job["id"],
+                        company=job["company"],
+                        title=job["title"],
+                        location=job["location"],
+                        apply_url=job["apply_url"],
+                        source=job["source"],
+                        date_posted=job.get("date_posted") or "",
+                        body=job.get("body") or "",
+                        is_remote=bool(job["is_remote"]),
+                    )
+                    resume_path = generate_tailored_resume_pdf(j)
+                    store.set_job_resume_pdf(job["id"], resume_path)
+                except Exception as e:
+                    print(f"  ⚠ Could not generate tailored resume: {e}")
                 print("  ✅ Approved — will apply on next auto-apply run\n")
                 break
             elif cmd in ("s", "skip", ""):

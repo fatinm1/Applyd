@@ -1,0 +1,288 @@
+@import url("https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;800&family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;600;700&display=swap");
+@import "tailwindcss";
+
+:root {
+  --background: #0a0a0f;
+  --foreground: #e0e0e0;
+
+  --card: #12121a;
+  --muted: #1c1c2e;
+  --mutedForeground: #6b7280;
+
+  --accent: #00ff88;
+  --accentSecondary: #ff00ff;
+  --accentTertiary: #00d4ff;
+
+  --border: #2a2a3a;
+  --input: #12121a;
+  --destructive: #ff3366;
+
+  --font-orbitron: "Orbitron", ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  --font-share-tech-mono: "Share Tech Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --font-jetbrains-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+
+  --box-shadow-neon-sm: 0 0 3px var(--accent), 0 0 6px color-mix(in srgb, var(--accent) 25%, transparent);
+  --box-shadow-neon: 0 0 5px var(--accent), 0 0 10px color-mix(in srgb, var(--accent) 25%, transparent);
+  --box-shadow-neon-lg: 0 0 10px var(--accent), 0 0 20px color-mix(in srgb, var(--accent) 35%, transparent), 0 0 40px color-mix(in srgb, var(--accent) 25%, transparent);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-orbitron);
+  --font-mono: var(--font-jetbrains-mono);
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-jetbrains-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  letter-spacing: 0.01em;
+}
+
+.cyber-app {
+  position: relative;
+  z-index: 1;
+}
+
+/* Background textures: circuit grid + CRT scanlines. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.35;
+  background-image:
+    linear-gradient(rgba(0, 255, 136, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 136, 0.05) 1px, transparent 1px);
+  background-size: 50px 50px;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0.08;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.3) 2px,
+    rgba(0, 0, 0, 0.3) 4px
+  );
+}
+
+/* Chamfered corners via clip-path (no border-radius). */
+.cyber-chamfer-sm {
+  --cut: 10px;
+  clip-path: polygon(
+    0 var(--cut),
+    var(--cut) 0,
+    calc(100% - var(--cut)) 0,
+    100% var(--cut),
+    100% calc(100% - var(--cut)),
+    calc(100% - var(--cut)) 100%,
+    var(--cut) 100%,
+    0 calc(100% - var(--cut))
+  );
+}
+
+.cyber-panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: var(--box-shadow-neon-sm);
+}
+
+.cyber-panel-muted {
+  background: var(--muted);
+  border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+/* Buttons */
+.cyber-button {
+  font-family: var(--font-jetbrains-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-size: 12px;
+  padding: 12px 14px;
+  border: 2px solid var(--accent);
+  background: transparent;
+  color: var(--accent);
+  transition: transform 120ms steps(4), box-shadow 150ms ease, background 150ms ease;
+  box-shadow: none;
+}
+
+.cyber-button:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  box-shadow: var(--box-shadow-neon);
+  transform: translateY(-1px);
+}
+
+.cyber-button-secondary {
+  border-color: var(--accentSecondary);
+  color: var(--accentSecondary);
+}
+
+.cyber-button-secondary:hover {
+  background: color-mix(in srgb, var(--accentSecondary) 14%, transparent);
+  box-shadow: 0 0 5px var(--accentSecondary), 0 0 20px color-mix(in srgb, var(--accentSecondary) 25%, transparent);
+}
+
+.cyber-button-ghost {
+  border: 1px solid var(--border);
+  color: var(--foreground);
+}
+
+.cyber-button-ghost:hover {
+  border-color: var(--accent);
+  box-shadow: var(--box-shadow-neon-sm);
+}
+
+.cyber-button-destructive {
+  border-color: var(--destructive);
+  color: var(--destructive);
+}
+
+.cyber-button-destructive:hover {
+  background: color-mix(in srgb, var(--destructive) 14%, transparent);
+  box-shadow: 0 0 5px var(--destructive), 0 0 20px color-mix(in srgb, var(--destructive) 25%, transparent);
+}
+
+/* Badges */
+.cyber-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 9999px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+}
+
+/* Inputs */
+.cyber-input-wrap {
+  position: relative;
+}
+
+.cyber-input-prefix {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--accent);
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.cyber-input {
+  width: 100%;
+  background: var(--input);
+  border: 1px solid var(--border);
+  padding: 12px 12px 12px 30px;
+  color: var(--foreground);
+  outline: none;
+  clip-path: polygon(
+    0 var(--cut, 8px),
+    var(--cut, 8px) 0,
+    calc(100% - var(--cut, 8px)) 0,
+    100% var(--cut, 8px),
+    100% calc(100% - var(--cut, 8px)),
+    calc(100% - var(--cut, 8px)) 100%,
+    var(--cut, 8px) 100%,
+    0 calc(100% - var(--cut, 8px))
+  );
+  transition: box-shadow 150ms ease, border-color 150ms ease;
+}
+
+.cyber-input:focus {
+  border-color: var(--accent);
+  box-shadow: var(--box-shadow-neon-sm);
+}
+
+/* Cursor + glitch headline */
+@keyframes cyberBlink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.cyber-cursor::after {
+  content: "▌";
+  margin-left: 6px;
+  display: inline-block;
+  color: var(--accentTertiary);
+  animation: cyberBlink 1s step-end infinite;
+}
+
+@keyframes cyberGlitch {
+  0%,
+  100% {
+    transform: translate(0, 0);
+  }
+  20% {
+    transform: translate(-2px, 1px);
+  }
+  40% {
+    transform: translate(2px, -1px);
+  }
+  60% {
+    transform: translate(-1px, -1px);
+  }
+  80% {
+    transform: translate(1px, 1px);
+  }
+}
+
+.cyber-glitch {
+  display: inline-block;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 800;
+  position: relative;
+  transform: translateZ(0);
+  drop-shadow: 0 0 10px rgba(0, 255, 136, 0.5);
+  animation: cyberGlitch 2.4s infinite steps(4);
+}
+
+.cyber-glitch::before,
+.cyber-glitch::after {
+  content: attr(data-text);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.cyber-glitch::before {
+  color: var(--accentSecondary);
+  text-shadow: -1px 0 var(--accentSecondary);
+  clip-path: inset(0 0 50% 0);
+}
+
+.cyber-glitch::after {
+  color: var(--accentTertiary);
+  text-shadow: 1px 0 var(--accentTertiary);
+  clip-path: inset(50% 0 0 0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cyber-glitch {
+    animation: none;
+  }
+  .cyber-cursor::after {
+    animation: none;
+  }
+}

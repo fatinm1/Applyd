@@ -79,5 +79,25 @@ class Config:
     # Path to your base resume PDF (used for upload when applying)
     RESUME_PATH: str = os.getenv("RESUME_PATH", "resume.pdf")
 
+    # Resume tailoring (compile LaTeX to per-job PDFs).
+    # Requires a working LaTeX installation (pdflatex) on the machine.
+    TAILORED_RESUME_ENABLED: bool = os.getenv("TAILORED_RESUME_ENABLED", "true").lower() == "true"
+    RESUME_TEX_PATH: str = os.getenv("RESUME_TEX_PATH", "resume/resume_template.tex")
+    TAILORED_RESUME_DIR: str = os.getenv("TAILORED_RESUME_DIR", "tailored_resumes")
+    RESUME_TEX_COMPILER: str = os.getenv("RESUME_TEX_COMPILER", "pdflatex")
+    RESUME_TEX_PASSES: int = int(os.getenv("RESUME_TEX_PASSES", "1"))
+
+    # ── Web dashboard auth ───────────────────────────────────────────────
+    # Protects auto-apply actions behind a login.
+    DASHBOARD_USERNAME: str = os.getenv("DASHBOARD_USERNAME", "")
+    DASHBOARD_PASSWORD: str = os.getenv("DASHBOARD_PASSWORD", "")
+
+    # Session secret for Starlette's SessionMiddleware.
+    # For production, override this in `.env`.
+    SESSION_SECRET_KEY: str = os.getenv("SESSION_SECRET_KEY", "dev-change-me")
+
+    # CORS: comma-separated list of allowed origins (e.g. http://localhost:3000)
+    CORS_ALLOW_ORIGINS: str = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3000")
+
 
 config = Config()

@@ -1,0 +1,19 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Local runtime artifacts
+agent.log
+jobs.db
+tailored_resumes/
+
+# Frontend build + deps
+frontend/node_modules/
+frontend/.next/
+frontend/.turbo/
+
+# Env files
+.env

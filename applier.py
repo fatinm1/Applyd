@@ -18,17 +18,18 @@ from config import config
 from store import JobStore
 from matcher import generate_cover_letter
 from parser import Job
+from resume_tailer import generate_tailored_resume_pdf
 
 log = logging.getLogger(__name__)
 
 
 def run_auto_apply():
     """Process all approved jobs and attempt to apply."""
-    if not config.AUTO_APPLY_ENABLED:
-        log.info("Auto-apply is disabled. Set AUTO_APPLY_ENABLED=true to enable.")
+    store = JobStore()
+    if not store.get_auto_apply_enabled():
+        log.info("Auto-apply is disabled via agent settings.")
         return
 
-    store = JobStore()
     approved = [j for j in store.get_all() if j["status"] == "approved"]
 
     if not approved:
@@ -47,6 +48,9 @@ def run_auto_apply():
 
         # Get or generate cover letter
         cover_letter = job_row.get("cover_letter") or generate_cover_letter(job)
+        resume_path = job_row.get("resume_pdf_path") or ""
+        if not resume_path:
+            resume_path = generate_tailored_resume_pdf(job)
 
         success = False
         method  = "unknown"
@@ -54,10 +58,10 @@ def run_auto_apply():
         apply_url = job.apply_url or ""
 
         if _is_email_apply(apply_url):
-            success = _apply_via_email(job, apply_url, cover_letter)
+            success = _apply_via_email(job, apply_url, cover_letter, resume_path)
             method  = "email"
         elif apply_url.startswith("http"):
-            success = _apply_via_browser(job, apply_url, cover_letter)
+            success = _apply_via_browser(job, apply_url, cover_letter, resume_path)
             method  = "browser"
         else:
             log.warning(f"No apply URL for {job.display} — skipping")
@@ -81,7 +85,7 @@ def _is_email_apply(url: str) -> bool:
     return url.startswith("mailto:") or re.match(r'^[\w.+-]+@[\w-]+\.[\w.]+$', url)
 
 
-def _apply_via_email(job: Job, address: str, cover_letter: str) -> bool:
+def _apply_via_email(job: Job, address: str, cover_letter: str, resume_path: str) -> bool:
     if not config.NOTIFY_EMAIL or not config.GMAIL_APP_PASSWORD:
         log.error("Gmail credentials not configured for email apply.")
         return False
@@ -89,10 +93,15 @@ def _apply_via_email(job: Job, address: str, cover_letter: str) -> bool:
     to_addr = address.replace("mailto:", "").split("?")[0].strip()
 
     subject = f"Application: {job.title} — {config.YOUR_NAME}"
+
+    # Build HTML body without putting escaped newlines inside an f-string
+    # expression (Python forbids backslashes inside `{...}` in f-strings).
+    paras = [p.strip() for p in cover_letter.split("\n\n") if p.strip()]
+    paras_html = "".join(f"<p>{p}</p>" for p in paras)
     body_html = f"""
     <html><body style="font-family:Georgia,serif;max-width:640px;margin:0 auto;color:#1a1a1a;line-height:1.7">
       <p>Dear Hiring Team,</p>
-      {''.join(f'<p>{para.strip()}</p>' for para in cover_letter.split('\n\n') if para.strip())}
+      {paras_html}
       <p>Best regards,<br><strong>{config.YOUR_NAME}</strong><br>
       <a href="mailto:{config.YOUR_EMAIL}">{config.YOUR_EMAIL}</a></p>
     </body></html>"""
@@ -108,8 +117,8 @@ def _apply_via_email(job: Job, address: str, cover_letter: str) -> bool:
     try:
         import os
         from email.mime.application import MIMEApplication
-        if os.path.exists(config.RESUME_PATH):
-            with open(config.RESUME_PATH, "rb") as f:
+        if resume_path and os.path.exists(resume_path):
+            with open(resume_path, "rb") as f:
                 pdf = MIMEApplication(f.read(), _subtype="pdf")
                 pdf.add_header("Content-Disposition", "attachment",
                                filename=f"{config.YOUR_NAME.replace(' ', '_')}_Resume.pdf")
@@ -129,7 +138,7 @@ def _apply_via_email(job: Job, address: str, cover_letter: str) -> bool:
 
 # ── Browser apply (Playwright) ────────────────────────────────────────────────
 
-def _apply_via_browser(job: Job, url: str, cover_letter: str) -> bool:
+def _apply_via_browser(job: Job, url: str, cover_letter: str, resume_path: str) -> bool:
     """
     Attempt to fill out a web application form.
 
@@ -155,14 +164,14 @@ def _apply_via_browser(job: Job, url: str, cover_letter: str) -> bool:
             success = False
 
             if "lever.co" in domain:
-                success = _fill_lever(page, cover_letter)
+                success = _fill_lever(page, cover_letter, resume_path)
             elif "greenhouse.io" in domain or "boards.greenhouse" in domain:
-                success = _fill_greenhouse(page, cover_letter)
+                success = _fill_greenhouse(page, cover_letter, resume_path)
             elif "workday" in domain:
                 log.warning("Workday forms are complex — manual apply recommended")
                 success = False
             else:
-                success = _fill_generic(page, cover_letter)
+                success = _fill_generic(page, cover_letter, resume_path)
 
             browser.close()
             return success
@@ -172,7 +181,7 @@ def _apply_via_browser(job: Job, url: str, cover_letter: str) -> bool:
         return False
 
 
-def _fill_lever(page, cover_letter: str) -> bool:
+def _fill_lever(page, cover_letter: str, resume_path: str) -> bool:
     try:
         _safe_fill(page, 'input[name="name"]',       config.YOUR_NAME)
         _safe_fill(page, 'input[name="email"]',      config.YOUR_EMAIL)
@@ -181,10 +190,10 @@ def _fill_lever(page, cover_letter: str) -> bool:
 
         # Upload resume if field exists
         resume_input = page.query_selector('input[type="file"]')
-        if resume_input and config.RESUME_PATH:
+        if resume_input and resume_path:
             import os
-            if os.path.exists(config.RESUME_PATH):
-                resume_input.set_input_files(config.RESUME_PATH)
+            if os.path.exists(resume_path):
+                resume_input.set_input_files(resume_path)
 
         # Submit
         submit_btn = page.query_selector('button[type="submit"], input[type="submit"]')
@@ -197,7 +206,7 @@ def _fill_lever(page, cover_letter: str) -> bool:
     return False
 
 
-def _fill_greenhouse(page, cover_letter: str) -> bool:
+def _fill_greenhouse(page, cover_letter: str, resume_path: str) -> bool:
     try:
         _safe_fill(page, '#first_name',  config.YOUR_NAME.split()[0])
         _safe_fill(page, '#last_name',   config.YOUR_NAME.split()[-1])
@@ -206,10 +215,10 @@ def _fill_greenhouse(page, cover_letter: str) -> bool:
         page.wait_for_timeout(1000)
 
         resume_input = page.query_selector('input#resume')
-        if resume_input and config.RESUME_PATH:
+        if resume_input and resume_path:
             import os
-            if os.path.exists(config.RESUME_PATH):
-                resume_input.set_input_files(config.RESUME_PATH)
+            if os.path.exists(resume_path):
+                resume_input.set_input_files(resume_path)
 
         submit_btn = page.query_selector('#submit_app')
         if submit_btn:
@@ -221,7 +230,7 @@ def _fill_greenhouse(page, cover_letter: str) -> bool:
     return False
 
 
-def _fill_generic(page, cover_letter: str) -> bool:
+def _fill_generic(page, cover_letter: str, resume_path: str) -> bool:
     """Best-effort heuristic for unknown forms."""
     try:
         # Name
@@ -237,6 +246,15 @@ def _fill_generic(page, cover_letter: str) -> bool:
                     'textarea[name*="message"]', 'textarea']:
             if _safe_fill(page, sel, cover_letter):
                 break
+
+        # Resume upload best-effort (do NOT auto-submit).
+        if resume_path:
+            try:
+                resume_input = page.query_selector('input[type="file"]')
+                if resume_input and __import__("os").path.exists(resume_path):
+                    resume_input.set_input_files(resume_path)
+            except Exception:
+                pass
 
         log.info("Generic form fill attempted — no auto-submit (safety)")
         return False  # Don't auto-submit unknown forms

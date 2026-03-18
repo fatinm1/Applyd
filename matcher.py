@@ -132,6 +132,11 @@ Score guidelines:
 
 def generate_cover_letter(job: Job) -> str:
     """Generate a tailored cover letter for a job using Claude."""
+    # If the API key isn't configured, fall back to a deterministic,
+    # locally-generated letter so the dashboard workflow can still be tested.
+    if not config.ANTHROPIC_API_KEY:
+        return _fallback_cover_letter(job)
+
     prompt = f"""Write a concise, authentic cover letter for this job application.
 
 CANDIDATE:
@@ -162,3 +167,28 @@ Return only the letter body, no subject line, no salutation header."""
     )
 
     return message.content[0].text.strip()
+
+
+def _fallback_cover_letter(job: Job) -> str:
+    combined = f"{job.title} {job.body} {job.location}".lower()
+    matched = [s for s in config.SKILLS if s.lower() in combined]
+    if not matched:
+        matched = config.SKILLS[:3]
+    matched = matched[:3]
+
+    p1 = (
+        f"I’m excited to apply for the {job.title} role at {job.company}. "
+        f"My background aligns closely with {', '.join(matched)}, and I enjoy turning ambiguous requirements into clean, reliable software."
+    )
+    p2 = (
+        f"Based on my experience described in my bio, I’ve worked on full-stack products and Python ML pipelines—"
+        f"building features end-to-end, collaborating with teams, and iterating quickly. "
+        f"I’m especially interested in how your team applies {matched[0]} and delivers measurable outcomes."
+    )
+    p3 = (
+        f"I’d welcome the chance to discuss how I can contribute to {job.company}. "
+        f"Thank you for your time and consideration—I look forward to hearing from you."
+    )
+
+    # Applier/email code splits on blank lines into paragraphs.
+    return f"{p1}\n\n{p2}\n\n{p3}"

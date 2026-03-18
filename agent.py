@@ -31,7 +31,7 @@ REPOS = [
 ]
 
 
-def run_cycle():
+def run_scan_cycle():
     log.info("=== Starting job scan cycle ===")
 
     store    = JobStore()
@@ -81,15 +81,38 @@ def run_cycle():
     log.info("=== Cycle complete ===\n")
 
 
+# Backwards-compatible alias: scan-only.
+def run_cycle():
+    run_scan_cycle()
+
+
+def run_scan_cycle_and_apply():
+    """
+    Run one full scan cycle, then attempt Phase 2 auto-apply.
+
+    This is the "worker" entrypoint that can be called repeatedly by the
+    web backend's background loop.
+    """
+    run_scan_cycle()
+
+    # Phase 2: try auto-apply (no-op if AUTO_APPLY_ENABLED is false).
+    try:
+        from applier import run_auto_apply
+
+        run_auto_apply()
+    except Exception as e:
+        log.error(f"Auto-apply step failed: {e}")
+
+
 def main():
     log.info("Job Agent starting up...")
     log.info(f"Polling every {config.POLL_INTERVAL_MINUTES} minutes")
     log.info(f"Match threshold: {config.MATCH_THRESHOLD:.0%}")
 
     # Run immediately on start, then on schedule
-    run_cycle()
+    run_scan_cycle_and_apply()
 
-    schedule.every(config.POLL_INTERVAL_MINUTES).minutes.do(run_cycle)
+    schedule.every(config.POLL_INTERVAL_MINUTES).minutes.do(run_scan_cycle_and_apply)
 
     while True:
         schedule.run_pending()

@@ -89,7 +89,12 @@ python review.py cover <id>   # Generate cover letter for a job ID
 Once you've reviewed ~20 cycles and the matches look right:
 
 1. Set `AUTO_APPLY_ENABLED=true` in `.env`
-2. Put your resume PDF at the path in `RESUME_PATH`
+2. Put your resume PDF at the path in `RESUME_PATH` (fallback)
+3. (New) Enable resume tailoring in `.env` and provide LaTeX:
+   - `TAILORED_RESUME_ENABLED=true`
+   - `RESUME_TEX_PATH=resume/resume_template.tex`
+   - This generates a job-specific PDF on `approve` and Phase 2 attaches/uploads it.
+   - Requires a working LaTeX toolchain (typically `pdflatex`) on the machine.
 3. Approve jobs in `python review.py` — they'll be applied on the next cycle
 
 Supported platforms: **Lever**, **Greenhouse**, **email/mailto links**.
@@ -112,6 +117,9 @@ job_agent/
 ├── review.py         # CLI review tool
 ├── requirements.txt
 └── .env.example
+
+├── web_backend/       # FastAPI dashboard API + background worker
+└── resume_tailer.py   # Tailors resume and compiles job-specific PDFs
 ```
 
 ---

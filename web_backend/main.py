@@ -1,0 +1,290 @@
+"""
+FastAPI backend for the Applyd web dashboard.
+
+Provides session-authenticated APIs backed by `jobs.db` (JobStore) and runs a
+background worker that triggers the existing scan/auto-apply loop.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import threading
+from typing import Any, Optional
+
+from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from starlette.middleware.sessions import SessionMiddleware
+
+from agent import run_scan_cycle_and_apply
+from config import config
+from matcher import generate_cover_letter
+from parser import Job
+from store import JobStore
+from resume_tailer import generate_tailored_resume_pdf
+
+log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
+
+app = FastAPI(title="Applyd Dashboard API")
+
+# Use the project-wide DB.
+store = JobStore()
+
+# CORS so the Next.js dashboard can call this API from a different port.
+allowed_origins = [o.strip() for o in config.CORS_ALLOW_ORIGINS.split(",") if o.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins or ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=config.SESSION_SECRET_KEY,
+    same_site="lax",
+)
+
+_worker_stop = threading.Event()
+_worker_thread: Optional[threading.Thread] = None
+_worker_lock = threading.Lock()
+
+_cycle_lock = threading.Lock()
+_manual_run_lock = threading.Lock()
+_last_manual_run_ts = 0.0
+
+
+def _require_auth(request: Request) -> str:
+    user = request.session.get("user")
+    if not user:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return str(user)
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class RejectRequest(BaseModel):
+    notes: str = ""
+
+
+class AgentStateUpdate(BaseModel):
+    agent_enabled: Optional[bool] = None
+    auto_apply_enabled: Optional[bool] = None
+
+
+def _job_row_to_response(job_row: dict[str, Any]) -> dict[str, Any]:
+    # Normalize types for the frontend.
+    match_reasons_raw = job_row.get("match_reasons") or "[]"
+    try:
+        match_reasons = json.loads(match_reasons_raw)
+    except Exception:
+        match_reasons = []
+
+    return {
+        **job_row,
+        "match_reasons": match_reasons,
+        "is_remote": bool(job_row.get("is_remote")),
+    }
+
+
+def _background_worker():
+    poll_seconds = max(int(config.POLL_INTERVAL_MINUTES * 60), 30)
+    idle_seconds = 15
+
+    log.info("Background worker started.")
+    while not _worker_stop.is_set():
+        try:
+            settings = store.get_agent_settings()
+            if settings.get("agent_enabled", True):
+                # Serialize cycles so manual runs can't overlap the worker.
+                with _cycle_lock:
+                    run_scan_cycle_and_apply()
+                _worker_stop.wait(timeout=poll_seconds)
+            else:
+                log.info("Agent is disabled; sleeping.")
+                _worker_stop.wait(timeout=idle_seconds)
+        except Exception as e:
+            log.exception(f"Background worker error: {e}")
+            _worker_stop.wait(timeout=60)
+
+    log.info("Background worker stopped.")
+
+
+def _ensure_worker_running():
+    global _worker_thread
+    with _worker_lock:
+        if _worker_thread and _worker_thread.is_alive():
+            return
+        _worker_stop.clear()
+        _worker_thread = threading.Thread(target=_background_worker, daemon=True)
+        _worker_thread.start()
+
+
+@app.on_event("startup")
+def _startup():
+    _ensure_worker_running()
+
+
+@app.post("/api/auth/login")
+def login(payload: LoginRequest, request: Request):
+    if not config.DASHBOARD_USERNAME or not config.DASHBOARD_PASSWORD:
+        raise HTTPException(
+            status_code=500,
+            detail="Dashboard auth is not configured. Set DASHBOARD_USERNAME and DASHBOARD_PASSWORD in .env.",
+        )
+
+    if payload.username != config.DASHBOARD_USERNAME or payload.password != config.DASHBOARD_PASSWORD:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    request.session["user"] = payload.username
+    return {"ok": True}
+
+
+@app.post("/api/auth/logout")
+def logout(request: Request):
+    request.session.clear()
+    return {"ok": True}
+
+
+@app.get("/api/jobs")
+def list_jobs(
+    status: str = "pending",
+    limit: int = 200,
+    _user: str = Depends(_require_auth),
+):
+    allowed = {"pending", "approved", "applied", "rejected", "skipped"}
+    if status not in allowed:
+        raise HTTPException(status_code=400, detail=f"Invalid status. Allowed: {sorted(allowed)}")
+
+    jobs = store.get_by_status(status, limit=limit)
+    return {"jobs": [_job_row_to_response(j) for j in jobs]}
+
+
+@app.get("/api/jobs/{job_id}")
+def get_job(job_id: str, _user: str = Depends(_require_auth)):
+    job_row = store.get_job(job_id)
+    if not job_row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"job": _job_row_to_response(job_row)}
+
+
+def _update_status(job_id: str, status: str, notes: str = "", cover_letter: str = "") -> dict[str, Any]:
+    if not store.get_job(job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    store.update_status(job_id, status=status, notes=notes, cover_letter=cover_letter)
+    job_row = store.get_job(job_id)
+    if not job_row:
+        raise HTTPException(status_code=404, detail="Job not found after update")
+    return _job_row_to_response(job_row)
+
+
+@app.post("/api/jobs/{job_id}/approve")
+def approve_job(job_id: str, _user: str = Depends(_require_auth)):
+    _update_status(job_id, status="approved")
+
+    # Generate and cache a job-specific resume PDF at approval time.
+    # This keeps Phase 2 simple: it just attaches/uploads the cached PDF.
+    try:
+        job_row = store.get_job(job_id)
+        if job_row:
+            resume_path = job_row.get("resume_pdf_path") or ""
+            if not resume_path:
+                job = Job(
+                    id=job_row["id"],
+                    company=job_row["company"],
+                    title=job_row["title"],
+                    location=job_row.get("location") or "",
+                    apply_url=job_row.get("apply_url") or "",
+                    source=job_row.get("source") or "",
+                    date_posted=job_row.get("date_posted") or "",
+                    body=job_row.get("body") or "",
+                    is_remote=bool(job_row.get("is_remote")),
+                )
+                resume_path = generate_tailored_resume_pdf(job)
+                store.set_job_resume_pdf(job_id, resume_path)
+    except Exception as e:
+        log.exception(f"Failed to generate tailored resume for {job_id}: {e}")
+
+    job_row = store.get_job(job_id)
+    if not job_row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return {"job": _job_row_to_response(job_row)}
+
+
+@app.post("/api/jobs/{job_id}/skip")
+def skip_job(job_id: str, _user: str = Depends(_require_auth)):
+    return {"job": _update_status(job_id, status="skipped")}
+
+
+@app.post("/api/jobs/{job_id}/reject")
+def reject_job(job_id: str, payload: RejectRequest, _user: str = Depends(_require_auth)):
+    return {"job": _update_status(job_id, status="rejected", notes=payload.notes)}
+
+
+@app.post("/api/jobs/{job_id}/cover-letter")
+def generate_cover_letter_endpoint(job_id: str, _user: str = Depends(_require_auth)):
+    job_row = store.get_job(job_id)
+    if not job_row:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = Job(
+        id=job_row["id"],
+        company=job_row["company"],
+        title=job_row["title"],
+        location=job_row.get("location") or "",
+        apply_url=job_row.get("apply_url") or "",
+        source=job_row.get("source") or "",
+        date_posted=job_row.get("date_posted") or "",
+        body=job_row.get("body") or "",
+        is_remote=bool(job_row.get("is_remote")),
+    )
+
+    letter = generate_cover_letter(job)
+    # Preserve current status; only update cover letter.
+    store.update_status(job_id, status=job_row.get("status") or "pending", cover_letter=letter)
+    job_row = store.get_job(job_id)
+    return {"job": _job_row_to_response(job_row), "cover_letter": letter}
+
+
+@app.get("/api/stats")
+def stats(_user: str = Depends(_require_auth)):
+    return store.stats()
+
+
+@app.get("/api/agent/state")
+def agent_state(_user: str = Depends(_require_auth)):
+    return store.get_agent_settings()
+
+
+@app.post("/api/agent/state")
+def agent_state_update(payload: AgentStateUpdate, _user: str = Depends(_require_auth)):
+    if payload.agent_enabled is not None:
+        store.set_agent_enabled(bool(payload.agent_enabled))
+    if payload.auto_apply_enabled is not None:
+        store.set_auto_apply_enabled(bool(payload.auto_apply_enabled))
+    return store.get_agent_settings()
+
+
+@app.post("/api/agent/run")
+def run_now(_user: str = Depends(_require_auth)):
+    # Simple in-memory debounce (prevents spamming Claude/GitHub).
+    global _last_manual_run_ts
+    now = __import__("time").time()
+
+    with _manual_run_lock:
+        if now - _last_manual_run_ts < 60:
+            raise HTTPException(status_code=429, detail="Run requested too soon; wait 60s.")
+        _last_manual_run_ts = now
+
+    with _cycle_lock:
+        run_scan_cycle_and_apply()
+    return {"ok": True}
+

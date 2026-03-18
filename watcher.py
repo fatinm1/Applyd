@@ -8,6 +8,8 @@ last-seen snapshot, and return only new rows.
 For repos that use GitHub Issues for postings, there's also an issues-based fallback.
 """
 
+from __future__ import annotations
+
 import hashlib
 import re
 import logging
