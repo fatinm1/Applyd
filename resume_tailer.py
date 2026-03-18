@@ -22,8 +22,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
 
-import anthropic
-
 from config import config
 from parser import Job
 
@@ -127,6 +125,9 @@ def _fallback_blocks(job: Job, tech_block: str, proj_block: str) -> TailoredBloc
 def _claude_tailor_blocks(job: Job, base_tech: str, base_projects: str) -> TailoredBlocks:
     if not config.ANTHROPIC_API_KEY:
         return _fallback_blocks(job, base_tech, base_projects)
+
+    # Lazy import so we don't even touch the Anthropic client when offline.
+    import anthropic
 
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 

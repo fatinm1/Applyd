@@ -10,14 +10,24 @@ import logging
 import re
 from typing import Any
 
-import anthropic
-
 from config import config
 from parser import Job
 
 log = logging.getLogger(__name__)
 
-client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+
+def _get_anthropic_client():
+    """
+    Lazy Anthropic client creation.
+
+    This prevents any accidental import-time side effects and ensures we never
+    attempt requests when `ANTHROPIC_API_KEY` is blank.
+    """
+    if not config.ANTHROPIC_API_KEY:
+        return None
+    import anthropic  # imported only when key is present
+
+    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
 # Minimum heuristic score to bother calling Claude (saves API cost)
 _HEURISTIC_FLOOR = 0.25
@@ -92,6 +102,14 @@ class JobMatcher:
     # ── Claude scorer ────────────────────────────────────────────────────
 
     def _claude_score(self, job: Job) -> tuple[float, list[str]]:
+        if not config.ANTHROPIC_API_KEY:
+            # Hard guard: even if this method gets called incorrectly, never call the API.
+            raise RuntimeError("ANTHROPIC_API_KEY missing; Claude scoring disabled.")
+
+        client = _get_anthropic_client()
+        if client is None:
+            raise RuntimeError("ANTHROPIC client unavailable; Claude scoring disabled.")
+
         prompt = f"""You are evaluating a job posting for a candidate. Score the fit from 0.0 to 1.0.
 
 CANDIDATE PROFILE:
@@ -140,6 +158,10 @@ def generate_cover_letter(job: Job) -> str:
     # If the API key isn't configured, fall back to a deterministic,
     # locally-generated letter so the dashboard workflow can still be tested.
     if not config.ANTHROPIC_API_KEY:
+        return _fallback_cover_letter(job)
+
+    client = _get_anthropic_client()
+    if client is None:
         return _fallback_cover_letter(job)
 
     prompt = f"""Write a concise, authentic cover letter for this job application.
