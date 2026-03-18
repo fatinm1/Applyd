@@ -1,0 +1,12 @@
+.git
+.cursor
+*.log
+.env
+jobs.db
+tailored_resumes
+frontend/.next
+frontend/.turbo
+frontend/node_modules
+scripts/__pycache__
+__pycache__
+
