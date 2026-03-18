@@ -21,11 +21,11 @@ export default function Home() {
                   LOGIN
                 </Link>
                 <Link
-                  href="/dashboard"
+                  href="/demo"
                   className="cyber-button cyber-chamfer-sm cyber-button-ghost"
                   prefetch={false}
                 >
-                  OPEN DASHBOARD
+                  DEMO
                 </Link>
               </div>
             </div>

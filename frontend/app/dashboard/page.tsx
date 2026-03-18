@@ -39,6 +39,8 @@ export default function DashboardPage() {
   const [rejectNotes, setRejectNotes] = useState("");
   const [coverLoading, setCoverLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authed, setAuthed] = useState(false);
 
   async function refresh() {
     setLoadingJobs(true);
@@ -67,11 +69,34 @@ export default function DashboardPage() {
     }
   }
 
+  async function checkAuth() {
+    setError(null);
+    try {
+      const res = await getAgentStateApi();
+      setAgentState(res);
+      setAuthed(true);
+    } catch (err: any) {
+      if (err?.status === 401) {
+        router.push("/login");
+        return;
+      }
+      setError(err?.message ?? "Failed to load agent state");
+      setAuthed(false);
+    } finally {
+      setAuthChecked(true);
+    }
+  }
+
   useEffect(() => {
-    refresh();
-    refreshAgentState();
+    checkAuth();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusView]);
+  }, []);
+
+  useEffect(() => {
+    if (!authed) return;
+    refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusView, authed]);
 
   async function act(action: "approve" | "skip" | "reject", jobId: string) {
     if (actionLoading) return;
@@ -131,6 +156,16 @@ export default function DashboardPage() {
   }
 
   const applyUrl = selectedJob?.apply_url || (selectedJob?.source ? `https://github.com/${selectedJob.source}` : "");
+
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen p-6">
+        <div className="max-w-2xl mx-auto cyber-panel cyber-chamfer-sm p-6">
+          <div className="text-sm text-[var(--mutedForeground)]">Checking access...</div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen p-6">

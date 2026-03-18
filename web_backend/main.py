@@ -17,10 +17,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
-from agent import run_scan_cycle_and_apply
+from agent import REPOS, run_scan_cycle_and_apply
 from config import config
-from matcher import generate_cover_letter
-from parser import Job
+from matcher import JobMatcher, generate_cover_letter
+from parser import Job, JobParser
+from watcher import GitHubWatcher
 from store import JobStore
 from resume_tailer import generate_tailored_resume_pdf
 
@@ -77,6 +78,13 @@ class RejectRequest(BaseModel):
 class AgentStateUpdate(BaseModel):
     agent_enabled: Optional[bool] = None
     auto_apply_enabled: Optional[bool] = None
+
+
+class DemoRunRequest(BaseModel):
+    # How many example jobs to sample per repo.
+    sample_per_source: int = 5
+    # Keep responses small; we include only a short excerpt.
+    body_excerpt_chars: int = 300
 
 
 def _job_row_to_response(job_row: dict[str, Any]) -> dict[str, Any]:
@@ -287,4 +295,87 @@ def run_now(_user: str = Depends(_require_auth)):
     with _cycle_lock:
         run_scan_cycle_and_apply()
     return {"ok": True}
+
+
+def _estimate_auto_apply_handler(apply_url: str) -> str:
+    u = (apply_url or "").lower()
+    if "simplify.jobs" in u:
+        return "simplify.jobs (targeted Apply/Submit click)"
+    if "lever.co" in u:
+        return "lever.co (generic submit)"
+    if "greenhouse.io" in u or "boards.greenhouse" in u:
+        return "greenhouse.io (generic submit)"
+    if "workday" in u:
+        return "workday (often requires manual steps)"
+    return "generic/manual (no domain-specific automation)"
+
+
+@app.post("/api/demo/run")
+def demo_run(payload: DemoRunRequest):
+    """
+    Public demo endpoint:
+    - Fetches a small sample of postings from configured GitHub repos
+    - Parses them and runs HEURISTIC scoring only (offline / no Claude calls)
+    - Estimates what Phase 2 auto-apply handler would be used
+    """
+    sample_per_source = max(int(payload.sample_per_source or 0), 1)
+    body_excerpt_chars = max(int(payload.body_excerpt_chars or 0), 0)
+
+    watcher = GitHubWatcher(token=config.GITHUB_TOKEN)
+    parser = JobParser()
+    matcher = JobMatcher()
+
+    samples: list[dict[str, Any]] = []
+
+    for repo_info in REPOS:
+        owner, repo = repo_info["owner"], repo_info["repo"]
+        source = f"{owner}/{repo}"
+
+        raw_jobs = watcher.fetch_new_jobs(owner, repo)
+        parsed_jobs: list[dict[str, Any]] = []
+
+        for raw in (raw_jobs or [])[:sample_per_source]:
+            try:
+                job = parser.parse(raw, source=source)
+            except Exception:
+                continue
+
+            h_score, h_reasons = matcher._heuristic_score(job)
+            parsed_jobs.append(
+                {
+                    "job_id": job.id,
+                    "company": job.company,
+                    "title": job.title,
+                    "location": job.location,
+                    "apply_url": job.apply_url,
+                    "date_posted": job.date_posted,
+                    "match_score": round(h_score, 3),
+                    "match_reasons": h_reasons,
+                    "estimated_auto_apply_handler": _estimate_auto_apply_handler(job.apply_url),
+                    "body_excerpt": (job.body or "")[:body_excerpt_chars] if body_excerpt_chars else "",
+                }
+            )
+
+        samples.append({"source": source, "jobs": parsed_jobs})
+
+    agent_settings = store.get_agent_settings()
+
+    return {
+        "ok": True,
+        "note": "Demo simulation only. No applications are submitted.",
+        "agent_settings": agent_settings,
+        "demo": {
+            "tailored_resume_enabled": bool(config.TAILORED_RESUME_ENABLED),
+            "anthropic_key_configured": bool(config.ANTHROPIC_API_KEY),
+            "resume_tex_compiler": config.RESUME_TEX_COMPILER,
+            "resume_tailer_dir": config.TAILORED_RESUME_DIR,
+            "scoring_mode": "heuristic_only",
+            "phase2": {
+                "agent_enabled": bool(agent_settings.get("agent_enabled", True)),
+                "auto_apply_enabled": bool(agent_settings.get("auto_apply_enabled", False)),
+                "approval_required": True,
+            },
+        },
+        "samples": samples,
+    }
 

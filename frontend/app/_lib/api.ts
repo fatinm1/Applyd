@@ -86,3 +86,13 @@ export async function runAgentNowApi() {
   return apiFetchJson(`/api/agent/run`, { method: "POST" });
 }
 
+export async function runDemoApi(payload?: { samplePerSource?: number; bodyExcerptChars?: number }) {
+  return apiFetchJson(`/api/demo/run`, {
+    method: "POST",
+    body: JSON.stringify({
+      sample_per_source: payload?.samplePerSource ?? 5,
+      body_excerpt_chars: payload?.bodyExcerptChars ?? 300,
+    }),
+  });
+}
+
