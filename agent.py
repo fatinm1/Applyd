@@ -28,6 +28,7 @@ log = logging.getLogger(__name__)
 REPOS = [
     {"owner": "SimplifyJobs", "repo": "New-Grad-Positions"},
     {"owner": "pittcsc",      "repo": "Summer2025-Internships"},
+    {"owner": "speedyapply",  "repo": "2026-SWE-College-Jobs"},
 ]
 
 
@@ -44,6 +45,11 @@ def run_scan_cycle():
 
     for repo_info in REPOS:
         owner, repo = repo_info["owner"], repo_info["repo"]
+        repo_key = f"{owner}/{repo}"
+        # First-run per repo: index backlog into SQLite without calling Claude or notifying.
+        repo_is_first_run = not store.is_repo_indexed(repo_key)
+        if repo_is_first_run:
+            log.info(f"First run for {repo_key} — indexing existing postings without notifications.")
         log.info(f"Scanning {owner}/{repo} ...")
 
         try:
@@ -63,6 +69,12 @@ def run_scan_cycle():
             if store.is_seen(job.id):
                 continue
 
+            # On first run for this repo, avoid expensive scoring/Claude calls.
+            if repo_is_first_run:
+                store.mark_seen(job.id)
+                store.save_job(job, score=0.0, match_reasons=["[indexed on first run]"])
+                continue
+
             score, reasons = matcher.score(job)
             log.info(f"  [{score:.0%}] {job.company} — {job.title}")
 
@@ -71,6 +83,9 @@ def run_scan_cycle():
 
             if score >= config.MATCH_THRESHOLD:
                 new_matches.append((job, score, reasons))
+
+        if repo_is_first_run:
+            store.mark_repo_indexed(repo_key)
 
     if new_matches:
         log.info(f"Sending digest: {len(new_matches)} matches found")

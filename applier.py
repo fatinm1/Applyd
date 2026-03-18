@@ -30,7 +30,10 @@ def run_auto_apply():
         log.info("Auto-apply is disabled via agent settings.")
         return
 
-    approved = [j for j in store.get_all() if j["status"] == "approved"]
+    # IMPORTANT: `store.get_all()` is capped by a small LIMIT, which can cause
+    # approved jobs to fall outside the window and never be processed.
+    # Fetch by status with a large limit instead.
+    approved = store.get_by_status("approved", limit=10000)
 
     if not approved:
         log.info("No approved jobs to apply to.")
@@ -156,8 +159,17 @@ def _apply_via_browser(job: Job, url: str, cover_letter: str, resume_path: str) 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
             page    = browser.new_page()
-            page.goto(url, timeout=20_000)
-            page.wait_for_load_state("networkidle", timeout=15_000)
+            # Use a shorter, more reliable readiness signal.
+            # Many job boards keep long-polling / tracking connections open,
+            # so `networkidle` frequently times out.
+            page.goto(url, timeout=20_000, wait_until="domcontentloaded")
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=5_000)
+            except Exception:
+                # If the signal isn't reached, still attempt to fill fields.
+                pass
+            # Small grace period for late DOM injections.
+            page.wait_for_timeout(1500)
 
             # Detect platform
             domain = _extract_domain(url)
@@ -167,6 +179,8 @@ def _apply_via_browser(job: Job, url: str, cover_letter: str, resume_path: str) 
                 success = _fill_lever(page, cover_letter, resume_path)
             elif "greenhouse.io" in domain or "boards.greenhouse" in domain:
                 success = _fill_greenhouse(page, cover_letter, resume_path)
+            elif "simplify.jobs" in domain:
+                success = _fill_simplify(page, cover_letter, resume_path)
             elif "workday" in domain:
                 log.warning("Workday forms are complex — manual apply recommended")
                 success = False
@@ -228,6 +242,129 @@ def _fill_greenhouse(page, cover_letter: str, resume_path: str) -> bool:
     except Exception as e:
         log.warning(f"Greenhouse fill error: {e}")
     return False
+
+
+def _fill_simplify(page, cover_letter: str, resume_path: str) -> bool:
+    """
+    targeted best-effort apply for `simplify.jobs` links.
+    Unlike `_fill_generic`, we explicitly try to click the submit/apply button.
+    """
+    try:
+        # Basic identity fields.
+        for sel in [
+            'input[name*="name" i]',
+            'input[placeholder*="name" i]',
+            '#name',
+            'input[name="fullName" i]',
+        ]:
+            if _safe_fill(page, sel, config.YOUR_NAME):
+                break
+
+        for sel in [
+            'input[type="email"]',
+            'input[name*="email" i]',
+            'input[placeholder*="email" i]',
+        ]:
+            if _safe_fill(page, sel, config.YOUR_EMAIL):
+                break
+
+        # Cover letter.
+        for sel in [
+            'textarea[name*="cover" i]',
+            'textarea[name*="letter" i]',
+            'textarea[name*="message" i]',
+            'textarea[aria-label*="cover" i]',
+            'textarea[aria-label*="letter" i]',
+        ]:
+            if _safe_fill(page, sel, cover_letter):
+                break
+
+        # Resume upload (if a file input exists).
+        if resume_path:
+            try:
+                resume_input = page.query_selector('input[type="file"]')
+                if resume_input and __import__("os").path.exists(resume_path):
+                    resume_input.set_input_files(resume_path)
+            except Exception:
+                pass
+
+        # Submit:
+        old_url = page.url
+
+        # Try multiple clickable element types.
+        # Simplify pages frequently use non-standard markup, so we match on visible text,
+        # aria-label, title, or value attributes.
+        label_patterns = [
+            r"(apply|submit)",
+            r"(continue|next|send)",
+        ]
+        priority_selectors = [
+            'button[type="submit"]',
+            'input[type="submit"]',
+            'button',
+            'a',
+            '[role="button"]',
+        ]
+
+        clicked = False
+        for sel in priority_selectors:
+            elements = page.query_selector_all(sel)
+            if not elements:
+                continue
+            for el in elements:
+                label_parts: list[str] = []
+                try:
+                    label_parts.append(el.inner_text() or "")
+                except Exception:
+                    pass
+                try:
+                    label_parts.append(el.get_attribute("aria-label") or "")
+                except Exception:
+                    pass
+                try:
+                    label_parts.append(el.get_attribute("title") or "")
+                except Exception:
+                    pass
+                try:
+                    label_parts.append(el.get_attribute("value") or "")
+                except Exception:
+                    pass
+
+                label = " ".join(p.strip() for p in label_parts if p and p.strip())
+                if not label:
+                    continue
+                if any(re.search(pat, label, flags=re.IGNORECASE) for pat in label_patterns):
+                    try:
+                        el.scroll_into_view_if_needed()
+                    except Exception:
+                        pass
+                    el.click()
+                    clicked = True
+                    break
+            if clicked:
+                break
+
+        if not clicked:
+            log.warning("Simplify apply: submit action not found (no matching button/link).")
+            return False
+
+        # Wait briefly for redirect / confirmation.
+        try:
+            page.wait_for_timeout(1500)
+            page.wait_for_load_state("domcontentloaded", timeout=8000)
+        except Exception:
+            pass
+
+        # Success heuristic: URL changed or confirmation text appears.
+        new_url = page.url
+        if new_url and new_url != old_url:
+            return True
+
+        content = page.content() or ""
+        return bool(re.search(r"(application submitted|thank you|success|received)", content, flags=re.IGNORECASE))
+    except Exception as e:
+        log.warning(f"Simplify fill error: {e}")
+        return False
 
 
 def _fill_generic(page, cover_letter: str, resume_path: str) -> bool:

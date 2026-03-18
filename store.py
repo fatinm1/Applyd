@@ -32,6 +32,11 @@ class JobStore:
                     seen_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS indexed_repos (
+                    repo_key TEXT PRIMARY KEY,
+                    indexed_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY,
                     company TEXT,
@@ -78,6 +83,21 @@ class JobStore:
                 ("auto_apply_enabled", "true" if config.AUTO_APPLY_ENABLED else "false"),
             )
 
+    def is_repo_indexed(self, repo_key: str) -> bool:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM indexed_repos WHERE repo_key = ?",
+                (repo_key,),
+            ).fetchone()
+            return row is not None
+
+    def mark_repo_indexed(self, repo_key: str):
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO indexed_repos (repo_key, indexed_at) VALUES (?, ?)",
+                (repo_key, datetime.utcnow().isoformat()),
+            )
+
     # ── Dedup ────────────────────────────────────────────────────────────
 
     def is_seen(self, job_id: str) -> bool:
@@ -91,6 +111,11 @@ class JobStore:
                 "INSERT OR IGNORE INTO seen_jobs (id, seen_at) VALUES (?, ?)",
                 (job_id, datetime.utcnow().isoformat()),
             )
+
+    def seen_count(self) -> int:
+        with self._conn() as conn:
+            row = conn.execute("SELECT COUNT(*) as c FROM seen_jobs").fetchone()
+            return int(row["c"]) if row else 0
 
     # ── Jobs ─────────────────────────────────────────────────────────────
 

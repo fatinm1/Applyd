@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import html as html_lib
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -29,7 +30,10 @@ class GitHubWatcher:
         if token:
             self.session.headers.update({"Authorization": f"Bearer {token}"})
         self.session.headers.update(HEADERS_BASE)
-        self._readme_cache: dict[str, str] = {}  # repo_key -> last seen raw content
+        # NOTE: We intentionally do not keep an in-memory README diff cache here.
+        # The orchestrator constructs a new watcher per cycle, so any in-memory
+        # cache would reset and break change detection. Instead, we parse the
+        # full table each run and rely on SQLite (`seen_jobs`) for dedupe.
 
     # ── Public ──────────────────────────────────────────────────────────────
 
@@ -52,31 +56,32 @@ class GitHubWatcher:
             log.warning(f"README not found for {owner}/{repo} (status {r.status_code})")
             return None
 
-        import base64
-        content = base64.b64decode(r.json()["content"]).decode("utf-8", errors="replace")
+        data = r.json()
+        content = ""
 
-        cache_key = f"{owner}/{repo}"
-        old_content = self._readme_cache.get(cache_key, "")
-        self._readme_cache[cache_key] = content
+        # Contents API may omit `content` for large files. Prefer `download_url` when present.
+        download_url = data.get("download_url") or ""
+        encoding = data.get("encoding") or ""
+        raw_content = data.get("content") or ""
 
-        # On first run, parse entire table so we build the seen-store without applying
-        if not old_content:
-            log.info(f"  First run for {owner}/{repo} — indexing existing jobs (not applying)")
-            rows = self._parse_table(content)
-            # Mark all as seen immediately so we only act on future additions
-            return []   # caller will mark_seen each one
+        if download_url:
+            rr = self.session.get(download_url)
+            if rr.status_code == 200:
+                content = rr.text
+        elif encoding == "base64" and raw_content:
+            import base64
 
-        # Diff: find lines present in new content but not in old
-        old_lines = set(old_content.splitlines())
-        new_lines  = [l for l in content.splitlines() if l not in old_lines]
+            content = base64.b64decode(raw_content).decode("utf-8", errors="replace")
 
-        jobs = []
-        for line in new_lines:
-            job = self._row_to_job(line)
-            if job:
-                jobs.append(job)
+        if not content:
+            log.warning(f"README content empty for {owner}/{repo}")
+            return []
 
-        return jobs
+        # Parse markdown pipe tables and/or embedded HTML tables.
+        jobs = self._parse_table(content)
+        if jobs:
+            return jobs
+        return self._parse_html_tables(content)
 
     def _parse_table(self, content: str) -> list[dict]:
         jobs = []
@@ -84,6 +89,66 @@ class GitHubWatcher:
             job = self._row_to_job(line)
             if job:
                 jobs.append(job)
+        return jobs
+
+    def _parse_html_tables(self, content: str) -> list[dict]:
+        """
+        Some job repos embed HTML tables in README (no markdown `|` rows).
+        We extract <tr> rows with <td> cells and attempt to map them to:
+        company, title, location, apply_url, date_posted.
+        """
+        jobs: list[dict] = []
+        if "<table" not in content.lower():
+            return jobs
+
+        # Extract rows. Keep it regex-based to avoid adding heavy deps.
+        row_re = re.compile(r"<tr[^>]*>([\s\S]*?)</tr>", flags=re.IGNORECASE)
+        cell_re = re.compile(r"<t[dh][^>]*>([\s\S]*?)</t[dh]>", flags=re.IGNORECASE)
+        href_re = re.compile(r'href=[\"\\\'](https?://[^\"\\\']+)[\"\\\']', flags=re.IGNORECASE)
+
+        def strip_tags(html: str) -> str:
+            # Replace <br> with spaces, remove remaining tags.
+            s = re.sub(r"<br\\s*/?>", " ", html, flags=re.IGNORECASE)
+            s = re.sub(r"<[^>]+>", "", s)
+            s = s.replace("&amp;", "&").replace("&nbsp;", " ").strip()
+            return re.sub(r"\\s+", " ", s).strip()
+
+        for row_html in row_re.findall(content):
+            cells = [c.strip() for c in cell_re.findall(row_html)]
+            if len(cells) < 3:
+                continue
+
+            cell_text = [strip_tags(c) for c in cells]
+            # Heuristic mapping:
+            # [0]=company, [1]=role/title, [2]=location, [3]=apply, [4]=date (if present)
+            company = cell_text[0]
+            title = cell_text[1]
+            location = cell_text[2] if len(cell_text) > 2 else ""
+            date_text = cell_text[4] if len(cell_text) > 4 else (cell_text[3] if len(cell_text) > 3 else "")
+
+            # Apply URL: first link in row (prefer links in role/app columns).
+            links = href_re.findall(row_html)
+            apply_link = links[0] if links else ""
+
+            if not company or not title:
+                continue
+            # Skip header rows commonly present in HTML tables.
+            if company.strip().lower() == "company" and title.strip().lower() in {"role", "position", "title"}:
+                continue
+
+            job_id = hashlib.sha256(f"{company}|{title}|{location}".encode()).hexdigest()[:16]
+            jobs.append(
+                {
+                    "id": job_id,
+                    "company": company,
+                    "title": title,
+                    "location": location,
+                    "apply_url": apply_link,
+                    "date_posted": date_text,
+                    "raw_line": strip_tags(row_html)[:500],
+                }
+            )
+
         return jobs
 
     def _row_to_job(self, line: str) -> dict | None:
@@ -96,19 +161,61 @@ class GitHubWatcher:
         if len(cols) < 3:
             return None
 
+        # Skip markdown divider rows like: |---|---|---|
+        if all(c.replace("-", "").strip() == "" for c in cols):
+            return None
+
         # Extract plain text + first URL from markdown cells
         def extract(cell: str) -> tuple[str, str]:
+            """
+            Returns (plain_text, first_url).
+            Handles:
+            - markdown links: [Text](https://...)
+            - HTML links: <a href="https://...">Text</a>
+            """
+            cell = cell.strip()
+
+            # Markdown link
             url_match = re.search(r'\[([^\]]+)\]\((https?://[^)]+)\)', cell)
             if url_match:
                 return url_match.group(1), url_match.group(2)
+
+            # HTML href
+            href_match = re.search(r'href=["\'](https?://[^"\']+)["\']', cell, flags=re.IGNORECASE)
+            if href_match:
+                plain = re.sub(r"<br\\s*/?>", " ", cell, flags=re.IGNORECASE)
+                plain = re.sub(r"<[^>]+>", "", plain)
+                plain = html_lib.unescape(plain)
+                plain = re.sub(r"\\s+", " ", plain).strip()
+                return plain, href_match.group(1)
+
+            # Plain text: strip markdown link wrappers if present.
             plain = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', cell).strip()
+            plain = html_lib.unescape(plain)
+            plain = re.sub(r"<[^>]+>", "", plain)
+            plain = re.sub(r"\\s+", " ", plain).strip()
             return plain, ""
 
-        company_text, company_url = extract(cols[0])
-        title_text,   apply_url  = extract(cols[1])
-        location = cols[2] if len(cols) > 2 else ""
-        apply_link = apply_url or (extract(cols[3])[1] if len(cols) > 3 else "")
-        date_text  = cols[4] if len(cols) > 4 else ""
+        company_text, _ = extract(cols[0])
+        title_text, _ = extract(cols[1])
+        location, _ = extract(cols[2]) if len(cols) > 2 else ("", "")
+
+        # Apply URL extraction:
+        # - Most repos: [Company, Role, Location, Apply, Date]  -> apply URL is typically in column 3
+        # - speedyapply: [Company, Position, Location, Salary, Posting, Age] -> apply URL is typically in column 4
+        # To support both, search for the first URL in columns >= 3 (avoid picking up the company URL in column 0).
+        apply_link = ""
+        for idx in range(3, len(cols)):
+            _, url = extract(cols[idx])
+            if url:
+                apply_link = url
+                break
+        if not apply_link:
+            # Fallback: if no URL was found in the expected apply columns, try column 1 (role/position).
+            _, url = extract(cols[1]) if len(cols) > 1 else ("", "")
+            apply_link = url
+
+        date_text = cols[5] if len(cols) > 5 else (cols[4] if len(cols) > 4 else "")
 
         if not company_text or not title_text:
             return None

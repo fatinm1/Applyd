@@ -150,7 +150,7 @@ class JobParser:
 
         # Range: amount (dash/to) amount
         range_pat = re.compile(
-            r"(?P<a>\$?\s*[\d,]+(?:\.\d+)?\s*[kK]?)\s*(?:-|to)\s*(?P<b>\$?\s*[\d,]+(?:\.\d+)?\s*[kK]?)"
+            r"(?P<a>\$?\s*\d[\d,]*(?:\.\d+)?\s*[kK]?)\s*(?:-|to)\s*(?P<b>\$?\s*\d[\d,]*(?:\.\d+)?\s*[kK]?)"
         )
         m = range_pat.search(t)
         if m:
@@ -160,7 +160,7 @@ class JobParser:
 
         # Up to: "up to $180k"
         up_to_pat = re.compile(
-            r"(?:up to|≤|=<)\s*(?P<a>\$?\s*[\d,]+(?:\.\d+)?\s*[kK]?)",
+            r"(?:up to|≤|=<)\s*(?P<a>\$?\s*\d[\d,]*(?:\.\d+)?\s*[kK]?)",
             flags=re.IGNORECASE,
         )
         m = up_to_pat.search(t)
@@ -170,7 +170,7 @@ class JobParser:
 
         # Over / from: "over $120k" / "from $100k"
         from_pat = re.compile(
-            r"(?:over|above|from|>=|=>)\s*(?P<a>\$?\s*[\d,]+(?:\.\d+)?\s*[kK]?)",
+            r"(?:over|above|from|>=|=>)\s*(?P<a>\$?\s*\d[\d,]*(?:\.\d+)?\s*[kK]?)",
             flags=re.IGNORECASE,
         )
         m = from_pat.search(t)
@@ -179,7 +179,7 @@ class JobParser:
             return mn, None
 
         # Single amount: "$150k"
-        single_pat = re.compile(r"\$?\s*(?P<a>[\d,]+(?:\.\d+)?\s*[kK]?)")
+        single_pat = re.compile(r"\$?\s*(?P<a>\d[\d,]*(?:\.\d+)?\s*[kK]?)")
         m = single_pat.search(t)
         if m:
             v = self._parse_amount_to_usd(m.group("a"))
