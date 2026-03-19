@@ -41,5 +41,6 @@ RUN python3 -m playwright install --with-deps chromium || true
 EXPOSE 3000
 
 # Run FastAPI in background, keep Next.js in foreground.
-CMD ["sh", "-c", "python3 -m uvicorn web_backend.main:app --host 0.0.0.0 --port 8000 --log-level info & cd /app/frontend && npm run start -- -p 3000"]
+# Explicitly bind Next.js to 0.0.0.0 so Railway can reach the public port.
+CMD ["sh", "-c", "python3 -m uvicorn web_backend.main:app --host 0.0.0.0 --port 8000 --log-level info & cd /app/frontend && npm run start -- -p 3000 -H 0.0.0.0"]
 
