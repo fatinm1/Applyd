@@ -1,5 +1,9 @@
 const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "") ?? "http://localhost:8000";
+  // IMPORTANT:
+  // Next.js inlines `NEXT_PUBLIC_*` variables at build time.
+  // On Railway (Docker), calling `http://localhost:8000` from the browser
+  // will fail, so we default to same-origin relative `/api/*` calls.
+  process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/+$/, "") ?? "";
 
 async function apiFetchJson(path: string, init?: RequestInit) {
   const res = await fetch(`${API_BASE_URL}${path}`, {
