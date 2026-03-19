@@ -1,4 +1,4 @@
-# Job Agent 🤖
+# Applyd 
 
 An AI agent that watches GitHub job repos 24/7, scores postings against your
 profile using Claude, and sends you digests of the best matches. Apply manually
