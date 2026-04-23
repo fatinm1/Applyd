@@ -24,7 +24,7 @@ RUN npm run build
 # Copy the backend code after frontend build (keeps Docker layers smaller).
 WORKDIR /app
 COPY web_backend /app/web_backend
-COPY agent.py applier.py config.py matcher.py notifier.py parser.py resume_tailer.py review.py store.py watcher.py /app/
+COPY agent.py applier.py config.py llm.py matcher.py notifier.py parser.py resume_tailer.py review.py store.py watcher.py /app/
 COPY resume /app/resume
 COPY scripts /app/scripts
 COPY README.md /app/README.md
