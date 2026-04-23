@@ -231,6 +231,20 @@ def _approve_job_core(job_id: str) -> dict[str, Any]:
     return _job_row_to_response(job_row)
 
 
+# Shown when /api/mail/* is opened but this server has no row for job_id (common
+# mistake: approval email generated against local SQLite while PUBLIC_BASE_URL
+# pointed at production, which uses a different database).
+_MAIL_JOB_MISSING_HELP = """
+<p>That job id is not in <strong>this</strong> server’s database.</p>
+<p>Approval links always talk to the app behind <code>PUBLIC_BASE_URL</code>. That app must use the
+<strong>same database</strong> where the job and signed token were written (usually your deployed
+worker on Railway, not a one-off script on your laptop).</p>
+<p><strong>Typical fixes:</strong> run the agent / scan worker on the deployment that owns your
+production DB; or, for local testing, set <code>PUBLIC_BASE_URL</code> to a tunnel to your machine
+and run the API with the same <code>jobs.db</code> you used when sending the email.</p>
+"""
+
+
 def _mail_action_page(title: str, body: str, ok: bool = True) -> HTMLResponse:
     color = "#16a34a" if ok else "#dc2626"
     html = f"""
@@ -263,7 +277,7 @@ def mail_approve(job_id: str, token: str):
     try:
         job_row = store.get_job(job_id)
         if not job_row:
-            return _mail_action_page("Not found", "That job id was not found.", ok=False)
+            return _mail_action_page("Not found", _MAIL_JOB_MISSING_HELP, ok=False)
         if (job_row.get("status") or "pending") != "pending":
             return _mail_action_page("Already handled", f"This job is no longer pending (status={job_row.get('status')}).", ok=False)
 
@@ -279,7 +293,7 @@ def mail_reject(job_id: str, token: str):
     try:
         job_row = store.get_job(job_id)
         if not job_row:
-            return _mail_action_page("Not found", "That job id was not found.", ok=False)
+            return _mail_action_page("Not found", _MAIL_JOB_MISSING_HELP, ok=False)
         if (job_row.get("status") or "pending") != "pending":
             return _mail_action_page("Already handled", f"This job is no longer pending (status={job_row.get('status')}).", ok=False)
 

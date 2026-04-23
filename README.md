@@ -93,6 +93,7 @@ MAIL_ACTION_EXPIRY_HOURS=168                  # default: 7 days
 Notes:
 
 - `PUBLIC_BASE_URL` should match the URL you use in production (Railway custom domain, etc.). Localhost links generally **won’t work** from a phone’s mail app.
+- The URL must be the **same deployment and database** that creates the job rows and mail tokens. If you run `agent.py` or test scripts on your laptop against local `jobs.db` but set `PUBLIC_BASE_URL` to Railway, approve/reject will open production and show “Not found” because that job never existed in production’s database.
 - You still need Gmail creds (`NOTIFY_EMAIL` + `GMAIL_APP_PASSWORD`).
 
 ---
