@@ -1,33 +1,17 @@
 """
-matcher.py — Scores jobs against your profile using Claude.
+matcher.py — Scores jobs against your profile using an optional LLM.
 
 Returns a (score, reasons) tuple where score is 0.0–1.0.
-Fast heuristic pre-filter runs first; Claude is only called for promising jobs.
+Fast heuristic pre-filter runs first; an LLM is only called for promising jobs.
 """
 
-import json
 import logging
-import re
-from typing import Any
 
 from config import config
+from llm import complete_json, complete_text, llm_enabled
 from parser import Job
 
 log = logging.getLogger(__name__)
-
-
-def _get_anthropic_client():
-    """
-    Lazy Anthropic client creation.
-
-    This prevents any accidental import-time side effects and ensures we never
-    attempt requests when `ANTHROPIC_API_KEY` is blank.
-    """
-    if not config.ANTHROPIC_API_KEY:
-        return None
-    import anthropic  # imported only when key is present
-
-    return anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
 # Minimum heuristic score to bother calling Claude (saves API cost)
 _HEURISTIC_FLOOR = 0.25
@@ -40,23 +24,20 @@ class JobMatcher:
         # ── 1. Fast heuristic pre-filter ─────────────────────────────────
         h_score, h_reasons = self._heuristic_score(job)
 
-        # If we don't have an Anthropic API key configured, never call Claude.
-        # This keeps scans cheap/offline and prevents rate-limit blowups.
-        if not config.ANTHROPIC_API_KEY:
-            return h_score, h_reasons + ["[AI scoring skipped — no ANTHROPIC_API_KEY]"]
+        if not llm_enabled():
+            return h_score, h_reasons + ["[LLM scoring skipped — disabled]"]
 
         if h_score < _HEURISTIC_FLOOR:
-            return h_score, h_reasons + ["[skipped AI scoring — heuristic too low]"]
+            return h_score, h_reasons + ["[skipped LLM scoring — heuristic too low]"]
 
-        # ── 2. Claude scoring ─────────────────────────────────────────────
+        # ── 2. LLM scoring ────────────────────────────────────────────────
         try:
-            ai_score, ai_reasons = self._claude_score(job)
-            # Blend: 30% heuristic, 70% Claude
-            final = 0.3 * h_score + 0.7 * ai_score
-            return round(final, 3), h_reasons + ai_reasons
+            llm_score, llm_reasons = self._llm_score(job)
+            final = 0.3 * h_score + 0.7 * llm_score
+            return round(final, 3), h_reasons + llm_reasons
         except Exception as e:
-            log.warning(f"Claude scoring failed for {job.display}: {e}")
-            return h_score, h_reasons + [f"[AI scoring failed: {e}]"]
+            log.warning(f"LLM scoring failed for {job.display}: {e}")
+            return h_score, h_reasons + [f"[LLM scoring failed: {e}]"]
 
     # ── Heuristic scorer ─────────────────────────────────────────────────
 
@@ -99,17 +80,9 @@ class JobMatcher:
 
         return min(score, 1.0), reasons
 
-    # ── Claude scorer ────────────────────────────────────────────────────
+    # ── LLM scorer ───────────────────────────────────────────────────────
 
-    def _claude_score(self, job: Job) -> tuple[float, list[str]]:
-        if not config.ANTHROPIC_API_KEY:
-            # Hard guard: even if this method gets called incorrectly, never call the API.
-            raise RuntimeError("ANTHROPIC_API_KEY missing; Claude scoring disabled.")
-
-        client = _get_anthropic_client()
-        if client is None:
-            raise RuntimeError("ANTHROPIC client unavailable; Claude scoring disabled.")
-
+    def _llm_score(self, job: Job) -> tuple[float, list[str]]:
         prompt = f"""You are evaluating a job posting for a candidate. Score the fit from 0.0 to 1.0.
 
 CANDIDATE PROFILE:
@@ -137,31 +110,15 @@ Score guidelines:
 0.5-0.7 = Moderate fit, borderline
 <0.5 = Poor fit, skip"""
 
-        message = client.messages.create(
-            model="claude-sonnet-4-20250514",
-            max_tokens=300,
-            messages=[{"role": "user", "content": prompt}],
-        )
-
-        raw = message.content[0].text.strip()
-        # Strip any accidental markdown fences
-        raw = re.sub(r"^```[a-z]*\n?|```$", "", raw, flags=re.MULTILINE).strip()
-        data = json.loads(raw)
-
-        return float(data["score"]), data.get("reasons", [])
+        data = complete_json(prompt=prompt, max_tokens=350)
+        return float(data["score"]), list(data.get("reasons", []))
 
 
 # ── Cover letter generator ───────────────────────────────────────────────────
 
 def generate_cover_letter(job: Job) -> str:
-    """Generate a tailored cover letter for a job using Claude."""
-    # If the API key isn't configured, fall back to a deterministic,
-    # locally-generated letter so the dashboard workflow can still be tested.
-    if not config.ANTHROPIC_API_KEY:
-        return _fallback_cover_letter(job)
-
-    client = _get_anthropic_client()
-    if client is None:
+    """Generate a tailored cover letter for a job using the configured LLM."""
+    if not llm_enabled():
         return _fallback_cover_letter(job)
 
     prompt = f"""Write a concise, authentic cover letter for this job application.
@@ -187,13 +144,7 @@ Guidelines:
 
 Return only the letter body, no subject line, no salutation header."""
 
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=600,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    return message.content[0].text.strip()
+    return complete_text(prompt=prompt, max_tokens=650).strip()
 
 
 def _fallback_cover_letter(job: Job) -> str:

@@ -26,6 +26,17 @@ class Config:
     # ── Anthropic / Claude ─────────────────────────────────────────────────
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
 
+    # ── LLM Provider (optional; for free local AI via Ollama) ──────────────
+    # Defaults to "none" so other people can use heuristics-only for free.
+    # Supported:
+    # - "none": no LLM calls; heuristics + deterministic fallbacks only
+    # - "anthropic": use Claude via ANTHROPIC_API_KEY
+    # - "ollama": use a local Ollama server (free/open-source models)
+    LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "none").lower()
+    LLM_MODEL: str = os.getenv("LLM_MODEL", "qwen2.5:14b")
+    OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+    OLLAMA_TIMEOUT_SECONDS: int = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "60"))
+
     # ── Matching ───────────────────────────────────────────────────────────
     # Jobs scoring below this are silently skipped (0.0 – 1.0)
     MATCH_THRESHOLD: float = float(os.getenv("MATCH_THRESHOLD", "0.65"))

@@ -12,7 +12,6 @@ Compilation requires a working LaTeX toolchain (typically `pdflatex`).
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -23,6 +22,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
 
 from config import config
+from llm import complete_json, llm_enabled
 from parser import Job
 
 log = logging.getLogger(__name__)
@@ -122,14 +122,9 @@ def _fallback_blocks(job: Job, tech_block: str, proj_block: str) -> TailoredBloc
     )
 
 
-def _claude_tailor_blocks(job: Job, base_tech: str, base_projects: str) -> TailoredBlocks:
-    if not config.ANTHROPIC_API_KEY:
+def _llm_tailor_blocks(job: Job, base_tech: str, base_projects: str) -> TailoredBlocks:
+    if not llm_enabled():
         return _fallback_blocks(job, base_tech, base_projects)
-
-    # Lazy import so we don't even touch the Anthropic client when offline.
-    import anthropic
-
-    client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
     prompt = f"""You are tailoring a software engineer resume for a specific job.
 Return ONLY valid JSON (no markdown) with these keys:
@@ -169,16 +164,7 @@ JSON OUTPUT FORMAT EXAMPLE:
   "technical_skills_block": "<latex>",
   "projects_block": "<latex>"
 }}"""
-
-    message = client.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1400,
-        messages=[{"role": "user", "content": prompt}],
-    )
-
-    raw = message.content[0].text.strip()
-    raw = re.sub(r"^```[a-z]*\\n?|```$", "", raw, flags=re.MULTILINE).strip()
-    data = json.loads(raw)
+    data = complete_json(prompt=prompt, max_tokens=1600)
 
     return TailoredBlocks(
         technical_skills_block=str(data["technical_skills_block"]),
@@ -208,9 +194,9 @@ def generate_tailored_resume_pdf(job: Job) -> str:
     base_projects = _extract_block(base_tex, _PROJ_MARKER_START, _PROJ_MARKER_END)
 
     try:
-        blocks = _claude_tailor_blocks(job, base_tech=base_tech, base_projects=base_projects)
+        blocks = _llm_tailor_blocks(job, base_tech=base_tech, base_projects=base_projects)
     except Exception as e:
-        log.warning(f"Claude tailoring failed; using template blocks. Error: {e}")
+        log.warning(f"LLM tailoring failed; using template blocks. Error: {e}")
         blocks = _fallback_blocks(job, tech_block=base_tech, proj_block=base_projects)
 
     # Merge blocks back into template.

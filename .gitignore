@@ -17,3 +17,6 @@ frontend/.turbo/
 
 # Env files
 .env
+
+# Local Python virtualenvs
+.venv/

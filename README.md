@@ -1,8 +1,9 @@
 # Applyd 
 
-An AI agent that watches GitHub job repos 24/7, scores postings against your
-profile using Claude, and sends you digests of the best matches. Apply manually
-first — enable auto-apply once you trust the match quality.
+An agent that watches GitHub job repos 24/7, scores postings against your
+profile (heuristics by default; optional local/open-source LLM), and sends you
+digests of the best matches. Apply manually first — enable auto-apply once you
+trust the match quality.
 
 ## Repos watched
 - [SimplifyJobs/New-Grad-Positions](https://github.com/SimplifyJobs/New-Grad-Positions)
@@ -22,7 +23,28 @@ playwright install chromium   # only needed for Phase 2 auto-apply
 ### 2. Configure your profile
 
 Edit `config.py` — fill in your **name, bio, skills, target roles, and locations**.
-This is what Claude uses to score and write cover letters. The more specific, the better.
+This is what the scoring logic (and optional LLM) uses to score and write cover letters.
+The more specific, the better.
+
+### 2.5 (Optional) Free local AI via Ollama (recommended for you)
+
+If you want AI scoring/cover letters/resume tailoring **for free** while running locally 24/7:
+
+1. Install Ollama and pull a model (example):
+
+```bash
+ollama pull qwen2.5:14b
+```
+
+2. In `.env`, set:
+
+```bash
+LLM_PROVIDER=ollama
+LLM_MODEL=qwen2.5:14b
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+```
+
+If `LLM_PROVIDER=none` (default), Applyd runs **heuristics-only** (no LLM calls), so other people can use it without paying for inference.
 
 ### 3. Set environment variables
 
