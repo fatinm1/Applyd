@@ -177,8 +177,9 @@ def login(payload: LoginRequest, request: Request):
         raise HTTPException(
             status_code=401,
             detail=(
-                "No accounts yet. Set DASHBOARD_USERNAME and DASHBOARD_PASSWORD on the server and restart once "
-                "to bootstrap the first account, or register with a valid invite code."
+                "No accounts yet. Either set DASHBOARD_USERNAME and DASHBOARD_PASSWORD on the server and restart "
+                "once to bootstrap an admin account, or enable self-service sign-up (ALLOW_OPEN_REGISTRATION=true "
+                "or REGISTRATION_INVITE_CODE) and use /register."
             ),
         )
 
@@ -193,11 +194,35 @@ def login(payload: LoginRequest, request: Request):
     return {"ok": True, "user_id": uid, "username": str(un)}
 
 
+@app.get("/api/auth/registration")
+def registration_status():
+    """Public: whether /register is usable and what the client should collect."""
+    open_reg = bool(config.ALLOW_OPEN_REGISTRATION)
+    invite = (config.REGISTRATION_INVITE_CODE or "").strip()
+    invite_set = bool(invite)
+    allowed = open_reg or invite_set
+    return {
+        "allowed": allowed,
+        "open_registration": open_reg,
+        "invite_required": invite_set and not open_reg,
+    }
+
+
 @app.post("/api/auth/register")
 def register(payload: RegisterRequest):
+    open_reg = bool(config.ALLOW_OPEN_REGISTRATION)
     expected = (config.REGISTRATION_INVITE_CODE or "").strip()
-    if not expected or payload.invite_code.strip() != expected:
-        raise HTTPException(status_code=403, detail="Registration disabled or invalid invite code.")
+
+    if open_reg:
+        pass
+    elif expected:
+        if payload.invite_code.strip() != expected:
+            raise HTTPException(status_code=403, detail="Invalid invite code.")
+    else:
+        raise HTTPException(
+            status_code=403,
+            detail="Registration is disabled. Set ALLOW_OPEN_REGISTRATION=true or REGISTRATION_INVITE_CODE in server env.",
+        )
 
     u = payload.username.strip()
     if len(u) < 2 or len(payload.password) < 6:

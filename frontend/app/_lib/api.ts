@@ -38,11 +38,21 @@ export async function loginApi(username: string, password: string) {
   });
 }
 
+export type RegistrationStatus = {
+  allowed: boolean;
+  open_registration: boolean;
+  invite_required: boolean;
+};
+
+export async function getRegistrationStatusApi(): Promise<RegistrationStatus> {
+  return apiFetchJson("/api/auth/registration", { method: "GET" });
+}
+
 export async function registerApi(payload: {
   username: string;
   password: string;
   notification_email?: string;
-  invite_code: string;
+  invite_code?: string;
 }) {
   return apiFetchJson("/api/auth/register", {
     method: "POST",
@@ -50,7 +60,7 @@ export async function registerApi(payload: {
       username: payload.username,
       password: payload.password,
       notification_email: payload.notification_email ?? "",
-      invite_code: payload.invite_code,
+      invite_code: payload.invite_code ?? "",
     }),
   });
 }

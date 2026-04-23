@@ -1,17 +1,33 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { loginApi } from "../_lib/api";
+import { getRegistrationStatusApi, loginApi, type RegistrationStatus } from "../_lib/api";
 
 export default function LoginPage() {
   const router = useRouter();
+  const [reg, setReg] = useState<RegistrationStatus | null>(null);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await getRegistrationStatusApi();
+        if (!cancelled) setReg(s);
+      } catch {
+        if (!cancelled) setReg(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -92,12 +108,14 @@ export default function LoginPage() {
           </button>
         </form>
 
-        <p className="mt-5 text-sm text-[var(--mutedForeground)]">
-          Need an account?{" "}
-          <Link href="/register" className="text-[var(--accent)] underline-offset-2 hover:underline">
-            Register with invite code
-          </Link>
-        </p>
+        {reg === null || reg.allowed ? (
+          <p className="mt-5 text-sm text-[var(--mutedForeground)]">
+            Need an account?{" "}
+            <Link href="/register" className="text-[var(--accent)] underline-offset-2 hover:underline">
+              {reg?.open_registration ? "Create one" : reg?.invite_required ? "Register with invite code" : "Create an account"}
+            </Link>
+          </p>
+        ) : null}
       </div>
     </div>
   );

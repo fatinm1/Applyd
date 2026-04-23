@@ -97,7 +97,7 @@ Notes:
 - You still need Gmail creds (`NOTIFY_EMAIL` + `GMAIL_APP_PASSWORD`). That account is used to **sign in to SMTP** (From); **To** can be different per user.
 - **Web dashboard**: each logged-in user has a **notification email** (set on the dashboard after login). When you click **Run scan now**, digests and approval emails go **only to that user’s** address (or fall back to `NOTIFY_EMAIL` if they left it blank). The **background worker** sends to **every** user’s notification address plus `NOTIFY_EMAIL` (deduped).
 - **CLI `agent.py`**: behaves like the background worker (all saved notification addresses + `NOTIFY_EMAIL`).
-- Extra accounts: set `REGISTRATION_INVITE_CODE` in `.env`, then open `/register` and share the code only with people you trust.
+- **Self-service accounts**: set `ALLOW_OPEN_REGISTRATION=true` in `.env` (see `env.example`) so anyone can create an account at `/register`. For a public internet deployment, consider `false` plus `REGISTRATION_INVITE_CODE` instead.
 
 ---
 
