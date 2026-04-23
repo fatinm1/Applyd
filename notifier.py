@@ -9,7 +9,7 @@ import smtplib
 from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any, Optional
+from typing import Any, List, Optional
 from urllib.parse import quote
 
 import requests
@@ -23,21 +23,58 @@ log = logging.getLogger(__name__)
 
 
 class Notifier:
-    def send_digest(self, matches: list[tuple[Job, float, list[str]]]):
+    @staticmethod
+    def _smtp_configured() -> bool:
+        return bool((config.NOTIFY_EMAIL or "").strip() and (config.GMAIL_APP_PASSWORD or "").strip())
+
+    @staticmethod
+    def normalize_email_recipients(recipients: Optional[List[str]]) -> List[str]:
+        """
+        If `recipients` is None, default to NOTIFY_EMAIL (single address when set).
+        Dedupes case-insensitively while preserving the first spelling.
+        """
+        if recipients is None:
+            raw = [config.NOTIFY_EMAIL] if (config.NOTIFY_EMAIL or "").strip() else []
+        else:
+            raw = list(recipients)
+        out: dict[str, str] = {}
+        for r in raw:
+            e = (r or "").strip()
+            if e:
+                out.setdefault(e.lower(), e)
+        return list(out.values())
+
+    def send_digest(
+        self,
+        matches: list[tuple[Job, float, list[str]]],
+        *,
+        recipients: Optional[List[str]] = None,
+    ):
         """Send a digest of new job matches. matches = [(job, score, reasons), ...]"""
         matches_sorted = sorted(matches, key=lambda x: x[1], reverse=True)
 
         if config.SLACK_WEBHOOK_URL:
             self._send_slack(matches_sorted)
 
-        if config.NOTIFY_EMAIL and config.GMAIL_APP_PASSWORD:
-            self._send_email(matches_sorted)
+        tos = self.normalize_email_recipients(recipients)
+        email_sent = False
+        if tos and self._smtp_configured():
+            for to_addr in tos:
+                self._send_email(matches_sorted, to_addr=to_addr)
+            log.info("Email digest sent to %s recipient(s).", len(tos))
+            email_sent = True
 
-        if not config.SLACK_WEBHOOK_URL and not config.NOTIFY_EMAIL:
+        if not config.SLACK_WEBHOOK_URL and not email_sent:
             log.warning("No notification channel configured. Set SLACK_WEBHOOK_URL or NOTIFY_EMAIL.")
             self._print_digest(matches_sorted)
 
-    def send_match_approval_request_emails(self, matches: list[tuple[Job, float, list[str]]], store: Optional[Any] = None):
+    def send_match_approval_request_emails(
+        self,
+        matches: list[tuple[Job, float, list[str]]],
+        store: Optional[Any] = None,
+        *,
+        recipients: Optional[List[str]] = None,
+    ):
         """
         Send per-job approval emails with signed approve/reject links.
 
@@ -47,7 +84,7 @@ class Notifier:
         if not config.EMAIL_APPROVAL_REQUESTS_ENABLED:
             return
 
-        if not (config.NOTIFY_EMAIL and config.GMAIL_APP_PASSWORD):
+        if not self._smtp_configured():
             log.warning("EMAIL_APPROVAL_REQUESTS_ENABLED is true, but Gmail creds are missing.")
             return
 
@@ -60,6 +97,11 @@ class Notifier:
             from store import JobStore
 
             store = JobStore()
+
+        tos = self.normalize_email_recipients(recipients)
+        if not tos:
+            log.warning("No recipient addresses for approval-request emails (set NOTIFY_EMAIL or user notification emails).")
+            return
 
         base = config.PUBLIC_BASE_URL.rstrip("/")
 
@@ -144,32 +186,35 @@ Attachments:
                 </body></html>
                 """
 
-                msg = MIMEMultipart("mixed")
-                msg["Subject"] = subject
-                msg["From"] = config.NOTIFY_EMAIL
-                msg["To"] = config.NOTIFY_EMAIL
+                all_ok = True
+                for to_addr in tos:
+                    msg = MIMEMultipart("mixed")
+                    msg["Subject"] = subject
+                    msg["From"] = config.NOTIFY_EMAIL
+                    msg["To"] = to_addr
+                    alt = MIMEMultipart("alternative")
+                    alt.attach(MIMEText(text_body, "plain"))
+                    alt.attach(MIMEText(html_body, "html"))
+                    msg.attach(alt)
+                    cl2 = MIMEText(cover, "plain", _charset="utf-8")
+                    cl2.add_header("Content-Disposition", "attachment", filename="cover_letter.txt")
+                    msg.attach(cl2)
+                    if resume_path and os.path.exists(resume_path):
+                        with open(resume_path, "rb") as f:
+                            pdf = MIMEApplication(f.read(), _subtype="pdf")
+                            pdf.add_header("Content-Disposition", "attachment", filename="proposed_resume.pdf")
+                            msg.attach(pdf)
+                    try:
+                        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                            server.login(config.NOTIFY_EMAIL, config.GMAIL_APP_PASSWORD)
+                            server.send_message(msg)
+                    except Exception as send_exc:
+                        all_ok = False
+                        log.error("Approval request email failed for %s → %s: %s", job.display, to_addr, send_exc)
 
-                alt = MIMEMultipart("alternative")
-                alt.attach(MIMEText(text_body, "plain"))
-                alt.attach(MIMEText(html_body, "html"))
-                msg.attach(alt)
-
-                cl_att = MIMEText(cover, "plain", _charset="utf-8")
-                cl_att.add_header("Content-Disposition", "attachment", filename="cover_letter.txt")
-                msg.attach(cl_att)
-
-                if resume_path and os.path.exists(resume_path):
-                    with open(resume_path, "rb") as f:
-                        pdf = MIMEApplication(f.read(), _subtype="pdf")
-                        pdf.add_header("Content-Disposition", "attachment", filename="proposed_resume.pdf")
-                        msg.attach(pdf)
-
-                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-                    server.login(config.NOTIFY_EMAIL, config.GMAIL_APP_PASSWORD)
-                    server.send_message(msg)
-
-                store.mark_mail_action_sent(job.id)
-                log.info(f"Approval request email sent for {job.display}")
+                if all_ok:
+                    store.mark_mail_action_sent(job.id)
+                    log.info("Approval request email sent for %s (%s recipient(s))", job.display, len(tos))
             except Exception as e:
                 log.error(f"Approval request email failed for {job.display}: {e}")
 
@@ -280,7 +325,7 @@ Attachments:
 
     # ── Email ─────────────────────────────────────────────────────────────
 
-    def _send_email(self, matches: list):
+    def _send_email(self, matches: list, *, to_addr: Optional[str] = None):
         subject = f"🎯 Job Agent: {len(matches)} new match{'es' if len(matches) != 1 else ''}"
 
         html_rows = ""
@@ -325,10 +370,15 @@ Attachments:
           <p style="color:#9ca3af;font-size:12px;margin-top:24px">Sent by your Job Agent · jobs.db has full history</p>
         </body></html>"""
 
+        dest = (to_addr or config.NOTIFY_EMAIL or "").strip()
+        if not dest:
+            log.error("Email digest skipped: no recipient address.")
+            return
+
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"]    = config.NOTIFY_EMAIL
-        msg["To"]      = config.NOTIFY_EMAIL
+        msg["To"]      = dest
         msg.attach(MIMEText(html, "html"))
 
         try:

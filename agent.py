@@ -7,6 +7,7 @@ import schedule
 import time
 import logging
 from datetime import datetime
+from typing import Optional
 
 from watcher import GitHubWatcher
 from parser import JobParser
@@ -32,7 +33,7 @@ REPOS = [
 ]
 
 
-def run_scan_cycle():
+def run_scan_cycle(*, notification_user_id: Optional[int] = None):
     log.info("=== Starting job scan cycle ===")
 
     store    = JobStore()
@@ -89,9 +90,10 @@ def run_scan_cycle():
 
     if new_matches:
         log.info(f"Sending digest: {len(new_matches)} matches found")
-        notifier.send_digest(new_matches)
+        recipients = store.resolve_scan_notification_recipients(notification_user_id)
+        notifier.send_digest(new_matches, recipients=recipients)
         try:
-            notifier.send_match_approval_request_emails(new_matches, store=store)
+            notifier.send_match_approval_request_emails(new_matches, store=store, recipients=recipients)
         except Exception as e:
             log.warning(f"Approval request emails failed: {e}")
     else:
@@ -105,14 +107,14 @@ def run_cycle():
     run_scan_cycle()
 
 
-def run_scan_cycle_and_apply():
+def run_scan_cycle_and_apply(*, notification_user_id: Optional[int] = None):
     """
     Run one full scan cycle, then attempt Phase 2 auto-apply.
 
     This is the "worker" entrypoint that can be called repeatedly by the
     web backend's background loop.
     """
-    run_scan_cycle()
+    run_scan_cycle(notification_user_id=notification_user_id)
 
     # Phase 2: try auto-apply (no-op if AUTO_APPLY_ENABLED is false).
     try:

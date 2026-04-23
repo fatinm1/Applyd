@@ -68,9 +68,38 @@ def _require_auth(request: Request) -> str:
     return str(user)
 
 
+def _session_user_id(request: Request) -> Optional[int]:
+    raw = request.session.get("user_id")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    un = request.session.get("user")
+    if un:
+        row = store.get_user_by_username(str(un))
+        if row:
+            try:
+                return int(row["id"])
+            except (TypeError, ValueError, KeyError):
+                pass
+    return None
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class RegisterRequest(BaseModel):
+    username: str
+    password: str
+    notification_email: str = ""
+    invite_code: str = ""
+
+
+class MePatchRequest(BaseModel):
+    notification_email: str = ""
 
 
 class RejectRequest(BaseModel):
@@ -144,17 +173,84 @@ def _startup():
 
 @app.post("/api/auth/login")
 def login(payload: LoginRequest, request: Request):
-    if not config.DASHBOARD_USERNAME or not config.DASHBOARD_PASSWORD:
+    if store.count_users() == 0:
         raise HTTPException(
-            status_code=500,
-            detail="Dashboard auth is not configured. Set DASHBOARD_USERNAME and DASHBOARD_PASSWORD in .env.",
+            status_code=401,
+            detail=(
+                "No accounts yet. Set DASHBOARD_USERNAME and DASHBOARD_PASSWORD on the server and restart once "
+                "to bootstrap the first account, or register with a valid invite code."
+            ),
         )
 
-    if payload.username != config.DASHBOARD_USERNAME or payload.password != config.DASHBOARD_PASSWORD:
+    uid = store.verify_user_password(payload.username, payload.password)
+    if uid is None:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    request.session["user"] = payload.username
-    return {"ok": True}
+    row = store.get_user_by_id(uid)
+    un = (row or {}).get("username") or payload.username
+    request.session["user"] = str(un)
+    request.session["user_id"] = uid
+    return {"ok": True, "user_id": uid, "username": str(un)}
+
+
+@app.post("/api/auth/register")
+def register(payload: RegisterRequest):
+    expected = (config.REGISTRATION_INVITE_CODE or "").strip()
+    if not expected or payload.invite_code.strip() != expected:
+        raise HTTPException(status_code=403, detail="Registration disabled or invalid invite code.")
+
+    u = payload.username.strip()
+    if len(u) < 2 or len(payload.password) < 6:
+        raise HTTPException(status_code=400, detail="Username (min 2 chars) and password (min 6 chars) required.")
+
+    try:
+        uid = store.create_user(u, payload.password, payload.notification_email)
+    except Exception as e:
+        msg = str(e).lower()
+        if "unique" in msg or "duplicate" in msg:
+            raise HTTPException(status_code=409, detail="Username already taken")
+        raise HTTPException(status_code=400, detail=str(e))
+
+    return {"ok": True, "user_id": uid}
+
+
+def _validate_notification_email(raw: str) -> str:
+    em = (raw or "").strip()
+    if not em:
+        return ""
+    if "@" not in em or "." not in em.split("@", 1)[-1]:
+        raise HTTPException(status_code=400, detail="Invalid notification_email")
+    return em
+
+
+@app.get("/api/me")
+def get_me(request: Request, _user: str = Depends(_require_auth)):
+    uid = _session_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Session missing user id; log in again.")
+    row = store.get_user_by_id(uid)
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "user_id": uid,
+        "username": row.get("username") or "",
+        "notification_email": (row.get("notification_email") or "").strip(),
+    }
+
+
+@app.patch("/api/me")
+def patch_me(payload: MePatchRequest, request: Request, _user: str = Depends(_require_auth)):
+    uid = _session_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Session missing user id; log in again.")
+    em = _validate_notification_email(payload.notification_email)
+    store.update_user_notification_email(uid, em)
+    row = store.get_user_by_id(uid)
+    return {
+        "user_id": uid,
+        "username": (row or {}).get("username") or "",
+        "notification_email": em,
+    }
 
 
 @app.post("/api/auth/logout")
@@ -364,7 +460,7 @@ def agent_state_update(payload: AgentStateUpdate, _user: str = Depends(_require_
 
 
 @app.post("/api/agent/run")
-def run_now(_user: str = Depends(_require_auth)):
+def run_now(request: Request, _user: str = Depends(_require_auth)):
     # Simple in-memory debounce (prevents spamming Claude/GitHub).
     global _last_manual_run_ts
     now = __import__("time").time()
@@ -374,8 +470,9 @@ def run_now(_user: str = Depends(_require_auth)):
             raise HTTPException(status_code=429, detail="Run requested too soon; wait 60s.")
         _last_manual_run_ts = now
 
+    nid = _session_user_id(request)
     with _cycle_lock:
-        run_scan_cycle_and_apply()
+        run_scan_cycle_and_apply(notification_user_id=nid)
     return {"ok": True}
 
 

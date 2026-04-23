@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { FormEvent } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { loginApi } from "../_lib/api";
 
@@ -90,6 +91,13 @@ export default function LoginPage() {
             {loading ? "AUTH IN PROGRESS" : "ENTER"}
           </button>
         </form>
+
+        <p className="mt-5 text-sm text-[var(--mutedForeground)]">
+          Need an account?{" "}
+          <Link href="/register" className="text-[var(--accent)] underline-offset-2 hover:underline">
+            Register with invite code
+          </Link>
+        </p>
       </div>
     </div>
   );

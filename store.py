@@ -94,6 +94,14 @@ class SQLiteJobStore:
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    notification_email TEXT NOT NULL DEFAULT '',
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
             """)
 
             # Migration for existing databases created before `body` existed.
@@ -120,6 +128,8 @@ class SQLiteJobStore:
                 "INSERT OR IGNORE INTO agent_settings (key, value) VALUES (?, ?)",
                 ("auto_apply_enabled", "true" if config.AUTO_APPLY_ENABLED else "false"),
             )
+
+            self._bootstrap_default_user_sqlite(conn)
 
             # Backfill the application log for jobs already marked as `applied`
             # before this feature was introduced.
@@ -179,6 +189,100 @@ class SQLiteJobStore:
                             notes,
                         ),
                     )
+
+    def _bootstrap_default_user_sqlite(self, conn):
+        from auth_password import hash_password
+
+        row = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()
+        if row and int(row["c"]) > 0:
+            return
+        u = (config.DASHBOARD_USERNAME or "").strip()
+        p = config.DASHBOARD_PASSWORD or ""
+        if not u or not p:
+            return
+        h = hash_password(p)
+        em = (config.NOTIFY_EMAIL or "").strip()
+        conn.execute(
+            "INSERT INTO users (username, password_hash, notification_email) VALUES (?,?,?)",
+            (u, h, em),
+        )
+
+    def count_users(self) -> int:
+        with self._conn() as conn:
+            r = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()
+            return int(r["c"]) if r else 0
+
+    def get_user_by_id(self, user_id: int) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM users WHERE id = ?", (int(user_id),)).fetchone()
+            return dict(row) if row else None
+
+    def get_user_by_username(self, username: str) -> Optional[dict]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM users WHERE username = ? COLLATE NOCASE",
+                (username.strip(),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def verify_user_password(self, username: str, password: str) -> Optional[int]:
+        row = self.get_user_by_username(username)
+        if not row:
+            return None
+        from auth_password import verify_password
+
+        if not verify_password(password, row.get("password_hash") or ""):
+            return None
+        return int(row["id"])
+
+    def create_user(self, username: str, password: str, notification_email: str = "") -> int:
+        from auth_password import hash_password
+
+        u = username.strip()
+        if not u or not password:
+            raise ValueError("username and password required")
+        h = hash_password(password)
+        em = (notification_email or "").strip()
+        with self._conn() as conn:
+            cur = conn.execute(
+                "INSERT INTO users (username, password_hash, notification_email) VALUES (?,?,?)",
+                (u, h, em),
+            )
+            return int(cur.lastrowid)
+
+    def update_user_notification_email(self, user_id: int, notification_email: str) -> None:
+        em = (notification_email or "").strip()
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE users SET notification_email = ? WHERE id = ?",
+                (em, int(user_id)),
+            )
+
+    def list_user_notification_emails(self) -> list[str]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT notification_email FROM users WHERE notification_email IS NOT NULL AND TRIM(notification_email) != ''"
+            ).fetchall()
+            return [str(r["notification_email"]).strip() for r in rows if r["notification_email"]]
+
+    def resolve_scan_notification_recipients(self, web_user_id: Optional[int] = None) -> list[str]:
+        if web_user_id is not None:
+            row = self.get_user_by_id(int(web_user_id))
+            if row:
+                em = (row.get("notification_email") or "").strip()
+                if em:
+                    return [em]
+            fe = (config.NOTIFY_EMAIL or "").strip()
+            return [fe] if fe else []
+
+        out: dict[str, None] = {}
+        for em in self.list_user_notification_emails():
+            if em:
+                out.setdefault(em, None)
+        fe = (config.NOTIFY_EMAIL or "").strip()
+        if fe:
+            out.setdefault(fe, None)
+        return sorted(out.keys())
 
     def is_repo_indexed(self, repo_key: str) -> bool:
         with self._conn() as conn:
@@ -614,6 +718,19 @@ class MySQLJobStore:
                 ("auto_apply_enabled", "true" if config.AUTO_APPLY_ENABLED else "false"),
             )
 
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS users (
+                    id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                    username VARCHAR(255) NOT NULL UNIQUE,
+                    password_hash VARCHAR(512) NOT NULL,
+                    notification_email VARCHAR(320) NOT NULL DEFAULT '',
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+                """
+            )
+            self._bootstrap_default_user_mysql(cur)
+
             # Migrations for older MySQL schemas.
             def _add_col(sql: str):
                 try:
@@ -625,6 +742,102 @@ class MySQLJobStore:
             _add_col("ALTER TABLE jobs ADD COLUMN mail_action_token TEXT NULL")
             _add_col("ALTER TABLE jobs ADD COLUMN mail_action_expires_at DATETIME NULL")
             _add_col("ALTER TABLE jobs ADD COLUMN mail_action_sent_at DATETIME NULL")
+
+    def _bootstrap_default_user_mysql(self, cur):
+        from auth_password import hash_password
+
+        cur.execute("SELECT COUNT(*) as c FROM users")
+        row = cur.fetchone()
+        if row and int(row["c"]) > 0:
+            return
+        u = (config.DASHBOARD_USERNAME or "").strip()
+        p = config.DASHBOARD_PASSWORD or ""
+        if not u or not p:
+            return
+        h = hash_password(p)
+        em = (config.NOTIFY_EMAIL or "").strip()
+        cur.execute(
+            "INSERT INTO users (username, password_hash, notification_email) VALUES (%s,%s,%s)",
+            (u, h, em),
+        )
+
+    def count_users(self) -> int:
+        with self._conn() as cur:
+            cur.execute("SELECT COUNT(*) as c FROM users")
+            row = cur.fetchone()
+            return int(row["c"]) if row else 0
+
+    def get_user_by_id(self, user_id: int) -> Optional[dict]:
+        with self._conn() as cur:
+            cur.execute("SELECT * FROM users WHERE id = %s LIMIT 1", (int(user_id),))
+            row = cur.fetchone()
+            return self._normalize_row(dict(row)) if row else None
+
+    def get_user_by_username(self, username: str) -> Optional[dict]:
+        with self._conn() as cur:
+            cur.execute("SELECT * FROM users WHERE LOWER(username) = LOWER(%s) LIMIT 1", (username.strip(),))
+            row = cur.fetchone()
+            return self._normalize_row(dict(row)) if row else None
+
+    def verify_user_password(self, username: str, password: str) -> Optional[int]:
+        row = self.get_user_by_username(username)
+        if not row:
+            return None
+        from auth_password import verify_password
+
+        if not verify_password(password, row.get("password_hash") or ""):
+            return None
+        return int(row["id"])
+
+    def create_user(self, username: str, password: str, notification_email: str = "") -> int:
+        from auth_password import hash_password
+
+        u = username.strip()
+        if not u or not password:
+            raise ValueError("username and password required")
+        h = hash_password(password)
+        em = (notification_email or "").strip()
+        with self._conn() as cur:
+            cur.execute(
+                "INSERT INTO users (username, password_hash, notification_email) VALUES (%s,%s,%s)",
+                (u, h, em),
+            )
+            return int(cur.lastrowid)
+
+    def update_user_notification_email(self, user_id: int, notification_email: str) -> None:
+        em = (notification_email or "").strip()
+        with self._conn() as cur:
+            cur.execute(
+                "UPDATE users SET notification_email = %s WHERE id = %s",
+                (em, int(user_id)),
+            )
+
+    def list_user_notification_emails(self) -> list[str]:
+        with self._conn() as cur:
+            cur.execute(
+                "SELECT DISTINCT notification_email FROM users WHERE notification_email IS NOT NULL AND TRIM(notification_email) != ''"
+            )
+            rows = cur.fetchall() or []
+            return [str(r["notification_email"]).strip() for r in rows if r.get("notification_email")]
+
+    def resolve_scan_notification_recipients(self, web_user_id: Optional[int] = None) -> list[str]:
+        if web_user_id is not None:
+            row = self.get_user_by_id(int(web_user_id))
+            if row:
+                em = (row.get("notification_email") or "").strip()
+                if em:
+                    return [em]
+            fe = (config.NOTIFY_EMAIL or "").strip()
+            return [fe] if fe else []
+
+        out: dict[str, None] = {}
+        for em in self.list_user_notification_emails():
+            if em:
+                out.setdefault(em, None)
+        fe = (config.NOTIFY_EMAIL or "").strip()
+        if fe:
+            out.setdefault(fe, None)
+        return sorted(out.keys())
 
     # ── Repo indexing / dedup ────────────────────────────────────────────
     def is_repo_indexed(self, repo_key: str) -> bool:

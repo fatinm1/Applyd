@@ -38,6 +38,34 @@ export async function loginApi(username: string, password: string) {
   });
 }
 
+export async function registerApi(payload: {
+  username: string;
+  password: string;
+  notification_email?: string;
+  invite_code: string;
+}) {
+  return apiFetchJson("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify({
+      username: payload.username,
+      password: payload.password,
+      notification_email: payload.notification_email ?? "",
+      invite_code: payload.invite_code,
+    }),
+  });
+}
+
+export async function getMeApi() {
+  return apiFetchJson("/api/me", { method: "GET" });
+}
+
+export async function patchMeApi(payload: { notification_email: string }) {
+  return apiFetchJson("/api/me", {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function logoutApi() {
   return apiFetchJson("/api/auth/logout", { method: "POST" });
 }

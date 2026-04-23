@@ -109,9 +109,11 @@ def main() -> int:
     store = JobStore()
     store.save_job(job, score=0.88, match_reasons=["Synthetic test row for approval email."])
     notifier = Notifier()
+    recipients = store.resolve_scan_notification_recipients(None)
     notifier.send_match_approval_request_emails(
         [(job, 0.88, ["Synthetic test", "Heuristic-style reason"])],
         store=store,
+        recipients=recipients,
     )
     print("Sent (or logged errors above). Job id:", jid)
     print("Inbox:", config.NOTIFY_EMAIL)

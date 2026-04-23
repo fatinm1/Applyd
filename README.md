@@ -94,7 +94,10 @@ Notes:
 
 - `PUBLIC_BASE_URL` should match the URL you use in production (Railway custom domain, etc.). Localhost links generally **won’t work** from a phone’s mail app.
 - The URL must be the **same deployment and database** that creates the job rows and mail tokens. If you run `agent.py` or test scripts on your laptop against local `jobs.db` but set `PUBLIC_BASE_URL` to Railway, approve/reject will open production and show “Not found” because that job never existed in production’s database.
-- You still need Gmail creds (`NOTIFY_EMAIL` + `GMAIL_APP_PASSWORD`).
+- You still need Gmail creds (`NOTIFY_EMAIL` + `GMAIL_APP_PASSWORD`). That account is used to **sign in to SMTP** (From); **To** can be different per user.
+- **Web dashboard**: each logged-in user has a **notification email** (set on the dashboard after login). When you click **Run scan now**, digests and approval emails go **only to that user’s** address (or fall back to `NOTIFY_EMAIL` if they left it blank). The **background worker** sends to **every** user’s notification address plus `NOTIFY_EMAIL` (deduped).
+- **CLI `agent.py`**: behaves like the background worker (all saved notification addresses + `NOTIFY_EMAIL`).
+- Extra accounts: set `REGISTRATION_INVITE_CODE` in `.env`, then open `/register` and share the code only with people you trust.
 
 ---
 

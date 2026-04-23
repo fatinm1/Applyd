@@ -123,6 +123,10 @@ class Config:
     DASHBOARD_USERNAME: str = os.getenv("DASHBOARD_USERNAME", "")
     DASHBOARD_PASSWORD: str = os.getenv("DASHBOARD_PASSWORD", "")
 
+    # If set, POST /api/auth/register accepts this exact string as `invite_code`
+    # so additional dashboard users can be created without sharing the admin password.
+    REGISTRATION_INVITE_CODE: str = os.getenv("REGISTRATION_INVITE_CODE", "")
+
     # Session secret for Starlette's SessionMiddleware.
     # For production, override this in `.env`.
     SESSION_SECRET_KEY: str = os.getenv("SESSION_SECRET_KEY", "dev-change-me")
