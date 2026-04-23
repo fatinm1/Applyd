@@ -90,6 +90,10 @@ def run_scan_cycle():
     if new_matches:
         log.info(f"Sending digest: {len(new_matches)} matches found")
         notifier.send_digest(new_matches)
+        try:
+            notifier.send_match_approval_request_emails(new_matches, store=store)
+        except Exception as e:
+            log.warning(f"Approval request emails failed: {e}")
     else:
         log.info("No new matches this cycle.")
 

@@ -86,6 +86,13 @@ class Config:
     # Slack incoming webhook URL (optional)
     SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")
 
+    # Email approval requests (one-click approve/reject links)
+    # Requires Gmail creds + a publicly reachable base URL for your deployed app.
+    EMAIL_APPROVAL_REQUESTS_ENABLED: bool = os.getenv("EMAIL_APPROVAL_REQUESTS_ENABLED", "false").lower() == "true"
+    PUBLIC_BASE_URL: str = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+    MAIL_SIGNING_SECRET: str = os.getenv("MAIL_SIGNING_SECRET", "")
+    MAIL_ACTION_EXPIRY_HOURS: int = int(os.getenv("MAIL_ACTION_EXPIRY_HOURS", "168"))  # 7 days
+
     # ── Storage ────────────────────────────────────────────────────────────
     DB_PATH: str = os.getenv("DB_PATH", "jobs.db")
 

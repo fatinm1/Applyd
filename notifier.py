@@ -4,15 +4,20 @@ notifier.py — Sends match digests via Slack webhook and/or email.
 
 import json
 import logging
+import os
 import smtplib
+from email.mime.application import MIMEApplication
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Any
+from typing import Any, Optional
+from urllib.parse import quote
 
 import requests
 
 from config import config
+from matcher import generate_cover_letter
 from parser import Job
+from resume_tailer import generate_tailored_resume_pdf
 
 log = logging.getLogger(__name__)
 
@@ -31,6 +36,142 @@ class Notifier:
         if not config.SLACK_WEBHOOK_URL and not config.NOTIFY_EMAIL:
             log.warning("No notification channel configured. Set SLACK_WEBHOOK_URL or NOTIFY_EMAIL.")
             self._print_digest(matches_sorted)
+
+    def send_match_approval_request_emails(self, matches: list[tuple[Job, float, list[str]]], store: Optional[Any] = None):
+        """
+        Send per-job approval emails with signed approve/reject links.
+
+        This is intentionally separate from the digest email: digest is a quick scan;
+        approval emails include the resume PDF + cover letter attachments.
+        """
+        if not config.EMAIL_APPROVAL_REQUESTS_ENABLED:
+            return
+
+        if not (config.NOTIFY_EMAIL and config.GMAIL_APP_PASSWORD):
+            log.warning("EMAIL_APPROVAL_REQUESTS_ENABLED is true, but Gmail creds are missing.")
+            return
+
+        if not (config.PUBLIC_BASE_URL or "").strip():
+            log.warning("EMAIL_APPROVAL_REQUESTS_ENABLED is true, but PUBLIC_BASE_URL is missing.")
+            return
+
+        # Lazy import to avoid circular imports at module import time.
+        if store is None:
+            from store import JobStore
+
+            store = JobStore()
+
+        base = config.PUBLIC_BASE_URL.rstrip("/")
+
+        for job, score, reasons in matches:
+            try:
+                # Avoid spamming duplicate approval emails for the same job.
+                sent_at = store.get_mail_action_sent_at(job.id)
+                if sent_at:
+                    continue
+
+                token, _exp_iso = store.issue_mail_action_token(job.id)
+                tok_q = quote(token, safe="")
+
+                approve_url = f"{base}/api/mail/approve?job_id={quote(job.id)}&token={tok_q}"
+                reject_url = f"{base}/api/mail/reject?job_id={quote(job.id)}&token={tok_q}"
+
+                # Ensure we have a cover letter for attachment/preview.
+                row = store.get_job(job.id) or {}
+                cover = (row.get("cover_letter") or "").strip()
+                if not cover:
+                    cover = generate_cover_letter(job)
+                    store.update_status(job.id, status="pending", cover_letter=cover)
+
+                # Ensure we have the resume PDF that would be submitted.
+                resume_path = (row.get("resume_pdf_path") or "").strip()
+                if not resume_path:
+                    resume_path = generate_tailored_resume_pdf(job)
+                    if resume_path:
+                        store.set_job_resume_pdf(job.id, resume_path)
+
+                pct = f"{score:.0%}"
+                loc = "Remote" if job.is_remote else (job.location or "—")
+                apply_link = job.apply_url or f"https://github.com/{job.source}"
+                reasons_html = "<br>".join(f"• {r}" for r in (reasons or [])[:8])
+                reasons_txt = "\n".join(f"- {r}" for r in (reasons or [])[:8])
+
+                subject = f"Approve this match? {job.company} — {job.title} ({pct})"
+
+                text_body = f"""Applyd found a new match.
+
+Company: {job.company}
+Role: {job.title}
+Location: {loc}
+Match score: {pct}
+Apply link: {apply_link}
+
+Why it matched:
+{reasons_txt}
+
+Approve (one click):
+{approve_url}
+
+Reject (one click):
+{reject_url}
+
+Attachments:
+- proposed_resume.pdf (if present)
+- cover_letter.txt
+"""
+
+                html_body = f"""
+                <html><body style="font-family:system-ui,sans-serif;color:#111;max-width:760px;margin:0 auto;padding:24px;line-height:1.5">
+                  <h2 style="margin-top:0">New match — approval requested</h2>
+                  <p><strong>{job.company}</strong> — {job.title}<br>
+                     <span style="color:#6b7280">{loc}</span><br>
+                     <span style="display:inline-block;margin-top:8px;background:#dbeafe;color:#1d4ed8;padding:2px 10px;border-radius:9999px;font-size:13px;font-weight:700">Match: {pct}</span>
+                  </p>
+
+                  <p><strong>Apply link:</strong> <a href="{apply_link}">{apply_link}</a></p>
+
+                  <h3 style="margin-bottom:8px">Why it matched</h3>
+                  <div style="font-size:14px;color:#374151">{reasons_html}</div>
+
+                  <div style="margin-top:18px;display:flex;gap:10px;flex-wrap:wrap">
+                    <a href="{approve_url}" style="background:#16a34a;color:#fff;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:700">Approve</a>
+                    <a href="{reject_url}" style="background:#ef4444;color:#fff;padding:10px 14px;border-radius:10px;text-decoration:none;font-weight:700">Reject</a>
+                  </div>
+
+                  <p style="color:#6b7280;font-size:12px;margin-top:18px">
+                    These links expire after {config.MAIL_ACTION_EXPIRY_HOURS} hours. If you didn’t request this, ignore the email.
+                  </p>
+                </body></html>
+                """
+
+                msg = MIMEMultipart("mixed")
+                msg["Subject"] = subject
+                msg["From"] = config.NOTIFY_EMAIL
+                msg["To"] = config.NOTIFY_EMAIL
+
+                alt = MIMEMultipart("alternative")
+                alt.attach(MIMEText(text_body, "plain"))
+                alt.attach(MIMEText(html_body, "html"))
+                msg.attach(alt)
+
+                cl_att = MIMEText(cover, "plain", _charset="utf-8")
+                cl_att.add_header("Content-Disposition", "attachment", filename="cover_letter.txt")
+                msg.attach(cl_att)
+
+                if resume_path and os.path.exists(resume_path):
+                    with open(resume_path, "rb") as f:
+                        pdf = MIMEApplication(f.read(), _subtype="pdf")
+                        pdf.add_header("Content-Disposition", "attachment", filename="proposed_resume.pdf")
+                        msg.attach(pdf)
+
+                with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                    server.login(config.NOTIFY_EMAIL, config.GMAIL_APP_PASSWORD)
+                    server.send_message(msg)
+
+                store.mark_mail_action_sent(job.id)
+                log.info(f"Approval request email sent for {job.display}")
+            except Exception as e:
+                log.error(f"Approval request email failed for {job.display}: {e}")
 
     def send_apply_notification(
         self,

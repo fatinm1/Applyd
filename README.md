@@ -74,6 +74,27 @@ Generate one for "Mail". This is NOT your login password.
 
 **Slack webhook**: https://api.slack.com/messaging/webhooks
 
+### 4.5 (Optional) Email approval requests (Approve / Reject from your inbox)
+
+When enabled, Applyd sends **one email per new match** that includes:
+
+- **Approve** and **Reject** links (signed + expiring)
+- Attachments for **`proposed_resume.pdf`** (best-effort) and **`cover_letter.txt`**
+
+Configure in `.env`:
+
+```bash
+EMAIL_APPROVAL_REQUESTS_ENABLED=true
+PUBLIC_BASE_URL=https://YOUR_DEPLOYED_DOMAIN   # must be reachable from your phone/email client
+MAIL_SIGNING_SECRET=some-long-random-secret    # used to sign links
+MAIL_ACTION_EXPIRY_HOURS=168                  # default: 7 days
+```
+
+Notes:
+
+- `PUBLIC_BASE_URL` should match the URL you use in production (Railway custom domain, etc.). Localhost links generally **won’t work** from a phone’s mail app.
+- You still need Gmail creds (`NOTIFY_EMAIL` + `GMAIL_APP_PASSWORD`).
+
 ---
 
 ## Running
