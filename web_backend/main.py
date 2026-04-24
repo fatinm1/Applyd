@@ -244,13 +244,20 @@ def register(payload: RegisterRequest):
             raise HTTPException(status_code=409, detail="Username already taken")
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Confirmation mail (only if we have a destination and Gmail is configured).
+    welcome_sent = False
+    welcome_status = "skipped"
     try:
-        Notifier().send_registration_welcome(to_email=notif, username=u)
+        welcome_sent, welcome_status = Notifier().send_registration_welcome(to_email=notif, username=u)
     except Exception as e:
-        log.warning("Registration welcome email skipped: %s", e)
+        log.error("Registration welcome unexpected error: %s", e, exc_info=True)
+        welcome_status = "smtp_failed"
 
-    return {"ok": True, "user_id": uid}
+    return {
+        "ok": True,
+        "user_id": uid,
+        "welcome_email_sent": welcome_sent,
+        "welcome_email_status": welcome_status,
+    }
 
 
 def _validate_notification_email(raw: str) -> str:

@@ -79,9 +79,10 @@ class Config:
     # ── Notification ───────────────────────────────────────────────────────
     # At least one of these should be filled in.
 
-    # Email (uses Gmail SMTP by default)
-    NOTIFY_EMAIL: str = os.getenv("NOTIFY_EMAIL", "")
-    GMAIL_APP_PASSWORD: str = os.getenv("GMAIL_APP_PASSWORD", "")
+    # Email (uses Gmail SMTP by default). Strip whitespace; app passwords are often
+    # shown with spaces — removing them avoids silent SMTP auth failures.
+    NOTIFY_EMAIL: str = (os.getenv("NOTIFY_EMAIL", "") or "").strip()
+    GMAIL_APP_PASSWORD: str = (os.getenv("GMAIL_APP_PASSWORD", "") or "").strip().replace(" ", "")
 
     # Slack incoming webhook URL (optional)
     SLACK_WEBHOOK_URL: str = os.getenv("SLACK_WEBHOOK_URL", "")

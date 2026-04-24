@@ -48,12 +48,19 @@ export async function getRegistrationStatusApi(): Promise<RegistrationStatus> {
   return apiFetchJson("/api/auth/registration", { method: "GET" });
 }
 
+export type RegisterResponse = {
+  ok: boolean;
+  user_id: number;
+  welcome_email_sent: boolean;
+  welcome_email_status: string;
+};
+
 export async function registerApi(payload: {
   username: string;
   password: string;
   notification_email?: string;
   invite_code?: string;
-}) {
+}): Promise<RegisterResponse> {
   return apiFetchJson("/api/auth/register", {
     method: "POST",
     body: JSON.stringify({

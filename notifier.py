@@ -274,14 +274,20 @@ Attachments:
         except Exception as e:
             log.error(f"Apply notification email failed: {e}")
 
-    def send_registration_welcome(self, *, to_email: str, username: str) -> None:
+    def send_registration_welcome(self, *, to_email: str, username: str) -> tuple[bool, str]:
         """
         Optional confirmation after /register when the user supplied a notification address.
         Job digests / approval mail are still only sent when scans find matches.
+
+        Returns (sent, status) where status is one of:
+        ok | no_destination | smtp_not_configured | smtp_failed
         """
         em = (to_email or "").strip()
-        if not em or not self._smtp_configured():
-            return
+        if not em:
+            return False, "no_destination"
+        if not self._smtp_configured():
+            log.warning("Registration welcome skipped: NOTIFY_EMAIL or GMAIL_APP_PASSWORD not set")
+            return False, "smtp_not_configured"
 
         subject = f"Applyd — account created ({username})"
         plain = (
@@ -311,8 +317,10 @@ Attachments:
                 server.login(config.NOTIFY_EMAIL, config.GMAIL_APP_PASSWORD)
                 server.send_message(msg)
             log.info("Registration welcome email sent to %s", em)
+            return True, "ok"
         except Exception as e:
-            log.warning("Registration welcome email failed: %s", e)
+            log.error("Registration welcome SMTP failed for %s: %s", em, e, exc_info=True)
+            return False, "smtp_failed"
 
     # ── Slack ─────────────────────────────────────────────────────────────
 

@@ -17,6 +17,10 @@ export default function RegisterPage() {
   const [inviteCode, setInviteCode] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [registrationDone, setRegistrationDone] = useState<{
+    welcome_email_sent: boolean;
+    welcome_email_status: string;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -38,13 +42,16 @@ export default function RegisterPage() {
     setError(null);
     setLoading(true);
     try {
-      await registerApi({
+      const res = await registerApi({
         username,
         password,
         notification_email: notificationEmail,
         invite_code: inviteCode,
       });
-      router.push("/login");
+      setRegistrationDone({
+        welcome_email_sent: Boolean(res.welcome_email_sent),
+        welcome_email_status: res.welcome_email_status ?? "",
+      });
     } catch (err: any) {
       setError(err?.message ?? "Registration failed");
     } finally {
@@ -66,15 +73,51 @@ export default function RegisterPage() {
           <div className="text-sm text-red-400 border border-red-400/40 p-3 cyber-chamfer-sm mb-4">{statusError}</div>
         ) : null}
 
-        {!status ? (
+        {registrationDone ? (
+          <div className="mb-6 space-y-4">
+            <div className="text-sm border border-[var(--border)] p-4 cyber-chamfer-sm leading-relaxed">
+              <p className="font-semibold text-[var(--foreground)] mb-2">Account created</p>
+              {registrationDone.welcome_email_sent ? (
+                <p className="text-[var(--mutedForeground)]">
+                  A confirmation was sent to your notification address. Check <strong>Spam</strong> or your
+                  university quarantine folder — mail from Gmail SMTP is sometimes filtered.
+                </p>
+              ) : registrationDone.welcome_email_status === "smtp_not_configured" ? (
+                <p className="text-[var(--mutedForeground)]">
+                  This server is not set up to send mail (<code className="text-xs">NOTIFY_EMAIL</code> /{" "}
+                  <code className="text-xs">GMAIL_APP_PASSWORD</code> missing on Railway). Ask the operator to add
+                  them, then use the dashboard to confirm your notification email.
+                </p>
+              ) : registrationDone.welcome_email_status === "smtp_failed" ? (
+                <p className="text-[var(--mutedForeground)]">
+                  The confirmation email could not be sent (SMTP error — often an invalid Gmail App Password, or paste
+                  the 16-character password <strong>without spaces</strong>). You can still sign in; check server logs
+                  for details.
+                </p>
+              ) : registrationDone.welcome_email_status === "no_destination" ? (
+                <p className="text-[var(--mutedForeground)]">
+                  No email address was saved for notifications. After login, set your notification email on the
+                  dashboard.
+                </p>
+              ) : (
+                <p className="text-[var(--mutedForeground)]">You can sign in below.</p>
+              )}
+            </div>
+            <button type="button" className="cyber-button cyber-chamfer-sm w-full" onClick={() => router.push("/login")}>
+              Continue to login
+            </button>
+          </div>
+        ) : null}
+
+        {!registrationDone && !status ? (
           <div className="text-sm text-[var(--mutedForeground)] mb-6">Loading…</div>
-        ) : !status.allowed ? (
+        ) : !registrationDone && !status.allowed ? (
           <div className="text-sm text-[var(--mutedForeground)] mb-6">
             Registration is turned off on this server. Ask the operator to set{" "}
             <code className="text-xs">ALLOW_OPEN_REGISTRATION=true</code> or a{" "}
             <code className="text-xs">REGISTRATION_INVITE_CODE</code> in the environment.
           </div>
-        ) : (
+        ) : !registrationDone && status ? (
           <>
             <p className="text-sm text-[var(--mutedForeground)] mb-6">
               {status.open_registration
@@ -137,7 +180,7 @@ export default function RegisterPage() {
               </button>
             </form>
           </>
-        )}
+        ) : null}
 
         <p className="mt-5 text-sm text-[var(--mutedForeground)]">
           <Link href="/login" className="text-[var(--accent)] underline-offset-2 hover:underline">
