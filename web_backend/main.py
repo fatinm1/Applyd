@@ -330,10 +330,24 @@ def delete_my_account(payload: DeleteAccountRequest, request: Request, _user: st
         raise HTTPException(status_code=400, detail="Password is required to delete your account.")
     if store.verify_user_password(username, payload.password) is None:
         raise HTTPException(status_code=400, detail="Incorrect password.")
+
+    notif_em = _notification_email_for_new_user(username, str(row.get("notification_email") or ""))
+    deletion_sent = False
+    deletion_status = "skipped"
+    try:
+        deletion_sent, deletion_status = Notifier().send_account_deleted(to_email=notif_em, username=username)
+    except Exception as e:
+        log.error("Account-deletion email unexpected error: %s", e, exc_info=True)
+        deletion_status = "smtp_failed"
+
     if not store.delete_user_by_id(uid):
         raise HTTPException(status_code=403, detail="Could not delete account.")
     request.session.clear()
-    return {"ok": True}
+    return {
+        "ok": True,
+        "deletion_email_sent": deletion_sent,
+        "deletion_email_status": deletion_status,
+    }
 
 
 @app.post("/api/auth/logout")

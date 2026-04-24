@@ -83,7 +83,13 @@ export async function patchMeApi(payload: { notification_email: string }) {
   });
 }
 
-export async function deleteAccountApi(password: string) {
+export type DeleteAccountResponse = {
+  ok: boolean;
+  deletion_email_sent: boolean;
+  deletion_email_status: string;
+};
+
+export async function deleteAccountApi(password: string): Promise<DeleteAccountResponse> {
   return apiFetchJson("/api/me/delete", {
     method: "POST",
     body: JSON.stringify({ password }),

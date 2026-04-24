@@ -322,6 +322,50 @@ Attachments:
             log.error("Registration welcome SMTP failed for %s: %s", em, e, exc_info=True)
             return False, "smtp_failed"
 
+    def send_account_deleted(self, *, to_email: str, username: str) -> tuple[bool, str]:
+        """
+        Confirmation after self-service account deletion (non-admin users).
+
+        Returns (sent, status): ok | no_destination | smtp_not_configured | smtp_failed
+        """
+        em = (to_email or "").strip()
+        if not em:
+            return False, "no_destination"
+        if not self._smtp_configured():
+            log.warning("Account-deletion email skipped: NOTIFY_EMAIL or GMAIL_APP_PASSWORD not set")
+            return False, "smtp_not_configured"
+
+        subject = f"Applyd — account deleted ({username})"
+        plain = (
+            f'Your Applyd account "{username}" has been permanently deleted.\n\n'
+            "You will no longer receive match digests or approval emails for this account. "
+            "If you did not request this, contact whoever operates this Applyd server.\n"
+        )
+        html = f"""
+        <html><body style="font-family:system-ui,sans-serif;color:#111;max-width:560px;margin:0 auto;padding:24px;line-height:1.5">
+          <h2 style="margin-top:0">Account deleted</h2>
+          <p>The Applyd login <strong>{username}</strong> has been permanently removed.</p>
+          <p style="color:#6b7280;font-size:13px">If you did not delete this account, contact your server operator.</p>
+        </body></html>
+        """
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = config.NOTIFY_EMAIL
+        msg["To"] = em
+        msg.attach(MIMEText(plain, "plain"))
+        msg.attach(MIMEText(html, "html"))
+
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(config.NOTIFY_EMAIL, config.GMAIL_APP_PASSWORD)
+                server.send_message(msg)
+            log.info("Account-deletion confirmation sent to %s", em)
+            return True, "ok"
+        except Exception as e:
+            log.error("Account-deletion SMTP failed for %s: %s", em, e, exc_info=True)
+            return False, "smtp_failed"
+
     # ── Slack ─────────────────────────────────────────────────────────────
 
     def _send_slack(self, matches: list):

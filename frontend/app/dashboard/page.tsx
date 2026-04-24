@@ -151,8 +151,11 @@ export default function DashboardPage() {
     setDeleteBusy(true);
     setError(null);
     try {
-      await deleteAccountApi(deletePassword);
+      const del = await deleteAccountApi(deletePassword);
       setDeletePassword("");
+      if (del.deletion_email_sent) {
+        globalThis.alert("Account deleted. A confirmation email was sent to your notification address.");
+      }
       router.push("/login");
     } catch (err: any) {
       if (err?.status === 401) router.push("/login");
