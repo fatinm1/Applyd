@@ -96,17 +96,35 @@ def main():
         def export_all(query: str):
             return [dict(r) for r in scur.execute(query).fetchall()]
 
-        seen_jobs = export_all("SELECT id, seen_at FROM seen_jobs")
+        def sqlite_default_owner_uid() -> int:
+            row = scur.execute("SELECT id FROM users WHERE is_admin = 1 ORDER BY id LIMIT 1").fetchone()
+            if row and row["id"] is not None:
+                return int(row["id"])
+            row = scur.execute("SELECT MIN(id) as mid FROM users").fetchone()
+            if row and row["mid"] is not None:
+                return int(row["mid"])
+            return 1
+
+        default_owner = sqlite_default_owner_uid()
+
+        seen_jobs = export_all("SELECT * FROM seen_jobs")
+        for r in seen_jobs:
+            if "owner_user_id" not in r or r.get("owner_user_id") is None:
+                r["owner_user_id"] = default_owner
+
         indexed_repos = export_all("SELECT repo_key, indexed_at FROM indexed_repos")
         jobs = export_all("SELECT * FROM jobs")
+        for r in jobs:
+            if "owner_user_id" not in r or r.get("owner_user_id") is None:
+                r["owner_user_id"] = default_owner
         application_log = export_all("SELECT * FROM application_log")
         agent_settings = export_all("SELECT `key`, value FROM agent_settings")
 
         # Insert into MySQL.
         if seen_jobs:
             cur.executemany(
-                "INSERT INTO seen_jobs (id, seen_at) VALUES (%s, %s)",
-                [(r["id"], normalize_dt(r["seen_at"])) for r in seen_jobs],
+                "INSERT INTO seen_jobs (owner_user_id, id, seen_at) VALUES (%s, %s, %s)",
+                [(int(r["owner_user_id"]), r["id"], normalize_dt(r["seen_at"])) for r in seen_jobs],
             )
 
         if indexed_repos:
@@ -116,14 +134,15 @@ def main():
             )
 
         if jobs:
-            # Keep column order aligned with MySQL schema.
+            # Keep column order aligned with MySQL schema (composite PK owner_user_id + id).
             cur.executemany(
                 """
                 INSERT INTO jobs (
-                    id, company, title, location, apply_url, source, date_posted,
+                    owner_user_id, id, company, title, location, apply_url, source, date_posted,
                     is_remote, score, match_reasons, status, cover_letter, body,
-                    resume_pdf_path, resume_generated_at, applied_at, notes, created_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    resume_pdf_path, resume_generated_at, applied_at, notes,
+                    mail_action_token, mail_action_expires_at, mail_action_sent_at, created_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     company=VALUES(company),
                     title=VALUES(title),
@@ -141,10 +160,14 @@ def main():
                     resume_generated_at=VALUES(resume_generated_at),
                     applied_at=VALUES(applied_at),
                     notes=VALUES(notes),
+                    mail_action_token=VALUES(mail_action_token),
+                    mail_action_expires_at=VALUES(mail_action_expires_at),
+                    mail_action_sent_at=VALUES(mail_action_sent_at),
                     created_at=VALUES(created_at)
                 """,
                 [
                     (
+                        int(r["owner_user_id"]),
                         r["id"],
                         r.get("company"),
                         r.get("title"),
@@ -162,6 +185,9 @@ def main():
                         normalize_dt(r.get("resume_generated_at")),
                         normalize_dt(r.get("applied_at")),
                         r.get("notes"),
+                        r.get("mail_action_token"),
+                        normalize_dt(r.get("mail_action_expires_at")),
+                        normalize_dt(r.get("mail_action_sent_at")),
                         normalize_dt(r.get("created_at")),
                     )
                     for r in jobs

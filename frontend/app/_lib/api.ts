@@ -106,27 +106,39 @@ export async function listJobsApi(status: string, limit: number) {
   });
 }
 
-export async function getJobApi(jobId: string) {
-  return apiFetchJson(`/api/jobs/${encodeURIComponent(jobId)}`, { method: "GET" });
+function jobDetailPath(jobId: string, ownerUserId?: number) {
+  let p = `/api/jobs/${encodeURIComponent(jobId)}`;
+  if (ownerUserId != null) p += `?owner_user_id=${encodeURIComponent(String(ownerUserId))}`;
+  return p;
 }
 
-export async function approveJobApi(jobId: string) {
-  return apiFetchJson(`/api/jobs/${encodeURIComponent(jobId)}/approve`, { method: "POST" });
+function jobActionPath(jobId: string, action: string, ownerUserId?: number) {
+  let p = `/api/jobs/${encodeURIComponent(jobId)}/${action}`;
+  if (ownerUserId != null) p += `?owner_user_id=${encodeURIComponent(String(ownerUserId))}`;
+  return p;
 }
 
-export async function skipJobApi(jobId: string) {
-  return apiFetchJson(`/api/jobs/${encodeURIComponent(jobId)}/skip`, { method: "POST" });
+export async function getJobApi(jobId: string, ownerUserId?: number) {
+  return apiFetchJson(jobDetailPath(jobId, ownerUserId), { method: "GET" });
 }
 
-export async function rejectJobApi(jobId: string, notes: string) {
-  return apiFetchJson(`/api/jobs/${encodeURIComponent(jobId)}/reject`, {
+export async function approveJobApi(jobId: string, ownerUserId?: number) {
+  return apiFetchJson(jobActionPath(jobId, "approve", ownerUserId), { method: "POST" });
+}
+
+export async function skipJobApi(jobId: string, ownerUserId?: number) {
+  return apiFetchJson(jobActionPath(jobId, "skip", ownerUserId), { method: "POST" });
+}
+
+export async function rejectJobApi(jobId: string, notes: string, ownerUserId?: number) {
+  return apiFetchJson(jobActionPath(jobId, "reject", ownerUserId), {
     method: "POST",
     body: JSON.stringify({ notes }),
   });
 }
 
-export async function coverLetterApi(jobId: string) {
-  return apiFetchJson(`/api/jobs/${encodeURIComponent(jobId)}/cover-letter`, { method: "POST" });
+export async function coverLetterApi(jobId: string, ownerUserId?: number) {
+  return apiFetchJson(jobActionPath(jobId, "cover-letter", ownerUserId), { method: "POST" });
 }
 
 export async function getStatsApi() {

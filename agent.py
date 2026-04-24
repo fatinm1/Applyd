@@ -37,12 +37,13 @@ def run_scan_cycle(*, notification_user_id: Optional[int] = None):
     log.info("=== Starting job scan cycle ===")
 
     store    = JobStore()
+    owner_uid = store.resolve_scan_owner_user_id(notification_user_id)
     watcher  = GitHubWatcher(token=config.GITHUB_TOKEN)
     parser   = JobParser()
     matcher  = JobMatcher()
     notifier = Notifier()
 
-    new_matches = []
+    new_matches: list[tuple] = []
 
     for repo_info in REPOS:
         owner, repo = repo_info["owner"], repo_info["repo"]
@@ -67,23 +68,23 @@ def run_scan_cycle(*, notification_user_id: Optional[int] = None):
                 log.warning(f"  Could not parse job: {e}")
                 continue
 
-            if store.is_seen(job.id):
+            if store.is_seen(owner_uid, job.id):
                 continue
 
             # On first run for this repo, avoid expensive scoring/Claude calls.
             if repo_is_first_run:
-                store.mark_seen(job.id)
-                store.save_job(job, score=0.0, match_reasons=["[indexed on first run]"])
+                store.mark_seen(owner_uid, job.id)
+                store.save_job(job, score=0.0, match_reasons=["[indexed on first run]"], owner_user_id=owner_uid)
                 continue
 
             score, reasons = matcher.score(job)
             log.info(f"  [{score:.0%}] {job.company} — {job.title}")
 
-            store.mark_seen(job.id)
-            store.save_job(job, score=score, match_reasons=reasons)
+            store.mark_seen(owner_uid, job.id)
+            store.save_job(job, score=score, match_reasons=reasons, owner_user_id=owner_uid)
 
             if score >= config.MATCH_THRESHOLD:
-                new_matches.append((job, score, reasons))
+                new_matches.append((job, score, reasons, owner_uid))
 
         if repo_is_first_run:
             store.mark_repo_indexed(repo_key)
@@ -93,7 +94,9 @@ def run_scan_cycle(*, notification_user_id: Optional[int] = None):
         recipients = store.resolve_scan_notification_recipients(notification_user_id)
         notifier.send_digest(new_matches, recipients=recipients)
         try:
-            notifier.send_match_approval_request_emails(new_matches, store=store, recipients=recipients)
+            notifier.send_match_approval_request_emails(
+                new_matches, store=store, recipients=recipients
+            )
         except Exception as e:
             log.warning(f"Approval request emails failed: {e}")
     else:

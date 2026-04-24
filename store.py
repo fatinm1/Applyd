@@ -38,8 +38,10 @@ class SQLiteJobStore:
         with self._conn() as conn:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS seen_jobs (
-                    id TEXT PRIMARY KEY,
-                    seen_at TEXT NOT NULL
+                    owner_user_id INTEGER NOT NULL,
+                    id TEXT NOT NULL,
+                    seen_at TEXT NOT NULL,
+                    PRIMARY KEY (owner_user_id, id)
                 );
 
                 CREATE TABLE IF NOT EXISTS indexed_repos (
@@ -48,7 +50,8 @@ class SQLiteJobStore:
                 );
 
                 CREATE TABLE IF NOT EXISTS jobs (
-                    id TEXT PRIMARY KEY,
+                    owner_user_id INTEGER NOT NULL,
+                    id TEXT NOT NULL,
                     company TEXT,
                     title TEXT,
                     location TEXT,
@@ -68,7 +71,8 @@ class SQLiteJobStore:
                     mail_action_token TEXT,
                     mail_action_expires_at TEXT,
                     mail_action_sent_at TEXT,
-                    created_at TEXT DEFAULT (datetime('now'))
+                    created_at TEXT DEFAULT (datetime('now')),
+                    PRIMARY KEY (owner_user_id, id)
                 );
 
                 -- Immutable-ish audit trail of what we tried to do on each job.
@@ -133,6 +137,7 @@ class SQLiteJobStore:
             self._migrate_users_is_admin_sqlite(conn)
             self._bootstrap_default_user_sqlite(conn)
             self._ensure_admin_flags_sqlite(conn)
+            self._migrate_sqlite_job_ownership_composite(conn)
 
             # Backfill the application log for jobs already marked as `applied`
             # before this feature was introduced.
@@ -154,12 +159,12 @@ class SQLiteJobStore:
 
             if missing_rows and int(missing_rows["c"]) > 0:
                 applied_rows = conn.execute("""
-                    SELECT id, company, title, source, apply_url, body,
-                           resume_pdf_path, cover_letter, status, notes
-                    FROM jobs
-                    WHERE status = 'applied'
+                    SELECT j.id, j.company, j.title, j.source, j.apply_url, j.body,
+                           j.resume_pdf_path, j.cover_letter, j.status, j.notes
+                    FROM jobs j
+                    WHERE j.status = 'applied'
                       AND NOT EXISTS (
-                          SELECT 1 FROM application_log al WHERE al.job_id = jobs.id
+                          SELECT 1 FROM application_log al WHERE al.job_id = j.id
                       )
                 """).fetchall()
 
@@ -230,6 +235,101 @@ class SQLiteJobStore:
                 r2 = conn.execute("SELECT MIN(id) as mid FROM users").fetchone()
                 if r2 and r2["mid"] is not None:
                     conn.execute("UPDATE users SET is_admin=1 WHERE id = ?", (int(r2["mid"]),))
+
+    def _default_job_owner_id_sqlite(self, conn) -> int:
+        row = conn.execute(
+            "SELECT id FROM users WHERE is_admin = 1 ORDER BY id LIMIT 1"
+        ).fetchone()
+        if row and row["id"] is not None:
+            return int(row["id"])
+        row = conn.execute("SELECT MIN(id) as mid FROM users").fetchone()
+        if row and row["mid"] is not None:
+            return int(row["mid"])
+        return 1
+
+    def _migrate_sqlite_job_ownership_composite(self, conn):
+        """
+        Legacy DBs used a single global `jobs.id` primary key. Per-user queues use
+        PRIMARY KEY (owner_user_id, id) plus scoped `seen_jobs`.
+        """
+        try:
+            jcols = [r["name"] for r in conn.execute("PRAGMA table_info(jobs)").fetchall()]
+        except sqlite3.OperationalError:
+            return
+        if not jcols or "owner_user_id" in jcols:
+            return
+
+        default_owner = self._default_job_owner_id_sqlite(conn)
+        log.info("Migrating jobs/seen_jobs to per-user ownership (default owner_user_id=%s)", default_owner)
+
+        conn.execute("ALTER TABLE jobs RENAME TO jobs_legacy_ownermig")
+        conn.executescript(
+            """
+            CREATE TABLE jobs (
+                owner_user_id INTEGER NOT NULL,
+                id TEXT NOT NULL,
+                company TEXT,
+                title TEXT,
+                location TEXT,
+                apply_url TEXT,
+                source TEXT,
+                date_posted TEXT,
+                is_remote INTEGER,
+                score REAL,
+                match_reasons TEXT,
+                status TEXT DEFAULT 'pending',
+                cover_letter TEXT,
+                body TEXT,
+                resume_pdf_path TEXT,
+                resume_generated_at TEXT,
+                applied_at TEXT,
+                notes TEXT,
+                mail_action_token TEXT,
+                mail_action_expires_at TEXT,
+                mail_action_sent_at TEXT,
+                created_at TEXT DEFAULT (datetime('now')),
+                PRIMARY KEY (owner_user_id, id)
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO jobs (
+                owner_user_id, id, company, title, location, apply_url, source, date_posted,
+                is_remote, score, match_reasons, status, cover_letter, body,
+                resume_pdf_path, resume_generated_at, applied_at, notes,
+                mail_action_token, mail_action_expires_at, mail_action_sent_at, created_at
+            )
+            SELECT
+                ?, id, company, title, location, apply_url, source, date_posted,
+                is_remote, score, match_reasons, status, cover_letter, body,
+                resume_pdf_path, resume_generated_at, applied_at, notes,
+                mail_action_token, mail_action_expires_at, mail_action_sent_at, created_at
+            FROM jobs_legacy_ownermig
+            """,
+            (default_owner,),
+        )
+        conn.execute("DROP TABLE jobs_legacy_ownermig")
+
+        conn.execute("ALTER TABLE seen_jobs RENAME TO seen_jobs_legacy_ownermig")
+        conn.executescript(
+            """
+            CREATE TABLE seen_jobs (
+                owner_user_id INTEGER NOT NULL,
+                id TEXT NOT NULL,
+                seen_at TEXT NOT NULL,
+                PRIMARY KEY (owner_user_id, id)
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO seen_jobs (owner_user_id, id, seen_at)
+            SELECT ?, id, seen_at FROM seen_jobs_legacy_ownermig
+            """,
+            (default_owner,),
+        )
+        conn.execute("DROP TABLE seen_jobs_legacy_ownermig")
 
     def _bootstrap_default_user_sqlite(self, conn):
         from auth_password import hash_password
@@ -310,6 +410,7 @@ class SQLiteJobStore:
         if self.user_is_admin(int(user_id)):
             return False
         with self._conn() as conn:
+            conn.execute("DELETE FROM jobs WHERE owner_user_id = ?", (int(user_id),))
             cur = conn.execute("DELETE FROM users WHERE id = ?", (int(user_id),))
             return cur.rowcount > 0
 
@@ -347,6 +448,15 @@ class SQLiteJobStore:
             out.setdefault(fe, None)
         return sorted(out.keys())
 
+    def get_worker_owner_user_id(self) -> int:
+        with self._conn() as conn:
+            return self._default_job_owner_id_sqlite(conn)
+
+    def resolve_scan_owner_user_id(self, notification_user_id: Optional[int]) -> int:
+        if notification_user_id is not None:
+            return int(notification_user_id)
+        return self.get_worker_owner_user_id()
+
     def is_repo_indexed(self, repo_key: str) -> bool:
         with self._conn() as conn:
             row = conn.execute(
@@ -362,18 +472,21 @@ class SQLiteJobStore:
                 (repo_key, datetime.utcnow().isoformat()),
             )
 
-    # ── Dedup ────────────────────────────────────────────────────────────
+    # ── Dedup (per scanning user) ────────────────────────────────────────
 
-    def is_seen(self, job_id: str) -> bool:
+    def is_seen(self, owner_user_id: int, job_id: str) -> bool:
         with self._conn() as conn:
-            row = conn.execute("SELECT 1 FROM seen_jobs WHERE id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT 1 FROM seen_jobs WHERE owner_user_id = ? AND id = ?",
+                (int(owner_user_id), job_id),
+            ).fetchone()
             return row is not None
 
-    def mark_seen(self, job_id: str):
+    def mark_seen(self, owner_user_id: int, job_id: str):
         with self._conn() as conn:
             conn.execute(
-                "INSERT OR IGNORE INTO seen_jobs (id, seen_at) VALUES (?, ?)",
-                (job_id, datetime.utcnow().isoformat()),
+                "INSERT OR IGNORE INTO seen_jobs (owner_user_id, id, seen_at) VALUES (?, ?, ?)",
+                (int(owner_user_id), job_id, datetime.utcnow().isoformat()),
             )
 
     def seen_count(self) -> int:
@@ -383,15 +496,22 @@ class SQLiteJobStore:
 
     # ── Jobs ─────────────────────────────────────────────────────────────
 
-    def save_job(self, job: Job, score: float = 0.0, match_reasons: list = None):
+    def save_job(
+        self,
+        job: Job,
+        score: float = 0.0,
+        match_reasons: list = None,
+        *,
+        owner_user_id: int,
+    ):
         with self._conn() as conn:
             conn.execute(
                 """
                 INSERT INTO jobs (
-                    id, company, title, location, apply_url, source, date_posted,
+                    owner_user_id, id, company, title, location, apply_url, source, date_posted,
                     is_remote, score, match_reasons, status, body
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
-                ON CONFLICT(id) DO UPDATE SET
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                ON CONFLICT(owner_user_id, id) DO UPDATE SET
                     company=excluded.company,
                     title=excluded.title,
                     location=excluded.location,
@@ -408,9 +528,16 @@ class SQLiteJobStore:
                     END
                 """,
                 (
-                    job.id, job.company, job.title, job.location,
-                    job.apply_url, job.source, job.date_posted,
-                    int(job.is_remote), score,
+                    int(owner_user_id),
+                    job.id,
+                    job.company,
+                    job.title,
+                    job.location,
+                    job.apply_url,
+                    job.source,
+                    job.date_posted,
+                    int(job.is_remote),
+                    score,
                     json.dumps(match_reasons or []),
                     job.body,
                 ),
@@ -430,12 +557,11 @@ class SQLiteJobStore:
     def _b64url(data: bytes) -> str:
         return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
-    def issue_mail_action_token(self, job_id: str) -> tuple[str, str]:
+    def issue_mail_action_token(self, owner_user_id: int, job_id: str) -> tuple[str, str]:
         """
         Returns (token, expires_at_iso).
 
-        Token format: v1|<job_id>|<exp_unix>|<rand>|<sig_b64url>
-        Signature covers: v1|<job_id>|<exp_unix>|<rand>
+        Token format: v2|<owner_user_id>|<job_id>|<exp_unix>|<rand>|<sig_b64url>
         """
         secret = self._mail_signing_secret()
         if not secret:
@@ -444,7 +570,8 @@ class SQLiteJobStore:
         exp = datetime.utcnow() + timedelta(hours=max(int(config.MAIL_ACTION_EXPIRY_HOURS), 1))
         exp_unix = str(int(exp.timestamp()))
         rand = secrets.token_urlsafe(16)
-        payload = f"v1|{job_id}|{exp_unix}|{rand}"
+        ou = int(owner_user_id)
+        payload = f"v2|{ou}|{job_id}|{exp_unix}|{rand}"
         sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
         token = f"{payload}|{self._b64url(sig)}"
 
@@ -454,73 +581,117 @@ class SQLiteJobStore:
                 UPDATE jobs
                 SET mail_action_token = ?,
                     mail_action_expires_at = ?
-                WHERE id = ?
+                WHERE owner_user_id = ? AND id = ?
                 """,
-                (token, exp.isoformat(), job_id),
+                (token, exp.isoformat(), ou, job_id),
             )
 
         return token, exp.isoformat()
 
-    def verify_mail_action_token(self, job_id: str, token: str) -> bool:
+    def parse_and_verify_mail_action_token(self, token: str) -> Optional[tuple[Optional[int], str]]:
+        """
+        Returns (owner_user_id, job_id) on success.
+        owner_user_id is None for legacy v1 tokens (caller must disambiguate).
+        """
         secret = self._mail_signing_secret()
         if not secret or not token:
-            return False
-
+            return None
         parts = token.split("|")
-        if len(parts) != 5 or parts[0] != "v1":
-            return False
-        tok_job_id, exp_unix_s, rand, sig_b64 = parts[1], parts[2], parts[3], parts[4]
-        if tok_job_id != job_id:
-            return False
+        if len(parts) == 6 and parts[0] == "v2":
+            try:
+                owner_user_id = int(parts[1])
+                job_id = parts[2]
+                exp_unix_s = parts[3]
+                rand = parts[4]
+                sig_b64 = parts[5]
+                exp_unix = int(exp_unix_s)
+            except Exception:
+                return None
+            if int(datetime.utcnow().timestamp()) > exp_unix:
+                return None
+            payload = f"v2|{owner_user_id}|{job_id}|{exp_unix_s}|{rand}"
+            expected_sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+            try:
+                got_sig = base64.urlsafe_b64decode(sig_b64 + "==")
+            except Exception:
+                return None
+            if not hmac.compare_digest(expected_sig, got_sig):
+                return None
+            return (owner_user_id, job_id)
+        if len(parts) == 5 and parts[0] == "v1":
+            job_id = parts[1]
+            exp_unix_s = parts[2]
+            rand = parts[3]
+            sig_b64 = parts[4]
+            try:
+                exp_unix = int(exp_unix_s)
+            except Exception:
+                return None
+            if int(datetime.utcnow().timestamp()) > exp_unix:
+                return None
+            payload = f"v1|{job_id}|{exp_unix_s}|{rand}"
+            expected_sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+            try:
+                got_sig = base64.urlsafe_b64decode(sig_b64 + "==")
+            except Exception:
+                return None
+            if not hmac.compare_digest(expected_sig, got_sig):
+                return None
+            return (None, job_id)
+        return None
 
-        try:
-            exp_unix = int(exp_unix_s)
-        except Exception:
+    def verify_mail_action_token(self, job_id: str, token: str, owner_user_id: Optional[int] = None) -> bool:
+        meta = self.parse_and_verify_mail_action_token(token)
+        if not meta:
             return False
-
-        if int(datetime.utcnow().timestamp()) > exp_unix:
+        tok_owner, tok_job = meta
+        if tok_job != job_id:
             return False
+        if tok_owner is not None:
+            return owner_user_id is None or int(tok_owner) == int(owner_user_id)
+        return True
 
-        payload = f"v1|{job_id}|{exp_unix_s}|{rand}"
-        expected_sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
-        try:
-            got_sig = base64.urlsafe_b64decode(sig_b64 + "==")
-        except Exception:
-            return False
-
-        return hmac.compare_digest(expected_sig, got_sig)
-
-    def get_mail_action_token_row(self, job_id: str) -> Optional[dict[str, Any]]:
+    def get_mail_action_token_row(self, owner_user_id: int, job_id: str) -> Optional[dict[str, Any]]:
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT mail_action_token, mail_action_expires_at FROM jobs WHERE id = ?",
-                (job_id,),
+                "SELECT mail_action_token, mail_action_expires_at FROM jobs WHERE owner_user_id = ? AND id = ?",
+                (int(owner_user_id), job_id),
             ).fetchone()
             return dict(row) if row else None
 
-    def mark_mail_action_sent(self, job_id: str):
+    def mark_mail_action_sent(self, owner_user_id: int, job_id: str):
         with self._conn() as conn:
             conn.execute(
-                "UPDATE jobs SET mail_action_sent_at = datetime('now') WHERE id = ?",
-                (job_id,),
+                "UPDATE jobs SET mail_action_sent_at = datetime('now') WHERE owner_user_id = ? AND id = ?",
+                (int(owner_user_id), job_id),
             )
 
-    def get_mail_action_sent_at(self, job_id: str) -> Optional[str]:
+    def get_mail_action_sent_at(self, owner_user_id: int, job_id: str) -> Optional[str]:
         with self._conn() as conn:
-            row = conn.execute("SELECT mail_action_sent_at FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT mail_action_sent_at FROM jobs WHERE owner_user_id = ? AND id = ?",
+                (int(owner_user_id), job_id),
+            ).fetchone()
             if not row:
                 return None
             return row["mail_action_sent_at"]
 
-    def update_status(self, job_id: str, status: str, notes: str = "", cover_letter: str = ""):
+    def update_status(
+        self,
+        owner_user_id: int,
+        job_id: str,
+        status: str,
+        notes: str = "",
+        cover_letter: str = "",
+    ):
         """status: pending | approved | applied | rejected | skipped"""
         with self._conn() as conn:
             conn.execute(
                 """UPDATE jobs SET status = ?, notes = ?,
                    cover_letter = COALESCE(NULLIF(?, ''), cover_letter),
                    applied_at = CASE WHEN ? = 'applied' THEN datetime('now') ELSE applied_at END
-                   WHERE id = ?""",
-                (status, notes, cover_letter, status, job_id),
+                   WHERE owner_user_id = ? AND id = ?""",
+                (status, notes, cover_letter, status, int(owner_user_id), job_id),
             )
 
     def log_application(
@@ -563,28 +734,51 @@ class SQLiteJobStore:
                 ),
             )
 
-    def set_job_resume_pdf(self, job_id: str, resume_pdf_path: str):
+    def set_job_resume_pdf(self, owner_user_id: int, job_id: str, resume_pdf_path: str):
         """Stores the tailored resume PDF path for this job."""
         with self._conn() as conn:
             conn.execute(
                 """UPDATE jobs SET resume_pdf_path = ?, resume_generated_at = datetime('now')
-                   WHERE id = ?""",
-                (resume_pdf_path, job_id),
+                   WHERE owner_user_id = ? AND id = ?""",
+                (resume_pdf_path, int(owner_user_id), job_id),
             )
 
     # ── Job reads ─────────────────────────────────────────────────────────
 
-    def get_job(self, job_id: str) -> Optional[dict]:
+    def get_job(self, owner_user_id: int, job_id: str) -> Optional[dict]:
         with self._conn() as conn:
-            row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE owner_user_id = ? AND id = ?",
+                (int(owner_user_id), job_id),
+            ).fetchone()
             return dict(row) if row else None
 
-    def get_by_status(self, status: str, limit: int = 200) -> list[dict]:
+    def find_jobs_by_canonical_id(self, job_id: str) -> list[dict]:
         with self._conn() as conn:
-            rows = conn.execute(
-                "SELECT * FROM jobs WHERE status = ? ORDER BY score DESC LIMIT ?",
-                (status, limit),
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_by_status(
+        self,
+        status: str,
+        limit: int = 200,
+        *,
+        owner_user_id: Optional[int] = None,
+        viewer_is_admin: bool = False,
+    ) -> list[dict]:
+        with self._conn() as conn:
+            if viewer_is_admin:
+                rows = conn.execute(
+                    "SELECT * FROM jobs WHERE status = ? ORDER BY score DESC LIMIT ?",
+                    (status, limit),
+                ).fetchall()
+            elif owner_user_id is not None:
+                rows = conn.execute(
+                    "SELECT * FROM jobs WHERE status = ? AND owner_user_id = ? ORDER BY score DESC LIMIT ?",
+                    (status, int(owner_user_id), limit),
+                ).fetchall()
+            else:
+                rows = []
             return [dict(r) for r in rows]
 
     def get_pending(self) -> list[dict]:
@@ -635,17 +829,36 @@ class SQLiteJobStore:
             "auto_apply_enabled": self.get_auto_apply_enabled(),
         }
 
-    def stats(self) -> dict:
+    def stats(self, *, owner_user_id: Optional[int] = None, viewer_is_admin: bool = False) -> dict:
         with self._conn() as conn:
-            row = conn.execute("""
-                SELECT
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status='applied' THEN 1 ELSE 0 END) as applied,
-                    SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
-                    SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) as skipped,
-                    ROUND(AVG(score), 2) as avg_score
-                FROM jobs
-            """).fetchone()
+            if viewer_is_admin:
+                row = conn.execute(
+                    """
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status='applied' THEN 1 ELSE 0 END) as applied,
+                        SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
+                        SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) as skipped,
+                        ROUND(AVG(score), 2) as avg_score
+                    FROM jobs
+                    """
+                ).fetchone()
+            elif owner_user_id is not None:
+                row = conn.execute(
+                    """
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status='applied' THEN 1 ELSE 0 END) as applied,
+                        SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
+                        SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) as skipped,
+                        ROUND(AVG(score), 2) as avg_score
+                    FROM jobs
+                    WHERE owner_user_id = ?
+                    """,
+                    (int(owner_user_id),),
+                ).fetchone()
+            else:
+                row = None
             return dict(row) if row else {}
 
 
@@ -703,8 +916,10 @@ class MySQLJobStore:
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS seen_jobs (
-                    id VARCHAR(64) PRIMARY KEY,
-                    seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    owner_user_id INT NOT NULL,
+                    id VARCHAR(64) NOT NULL,
+                    seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (owner_user_id, id)
                 )
                 """
             )
@@ -719,7 +934,8 @@ class MySQLJobStore:
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS jobs (
-                    id VARCHAR(64) PRIMARY KEY,
+                    owner_user_id INT NOT NULL,
+                    id VARCHAR(64) NOT NULL,
                     company TEXT,
                     title TEXT,
                     location TEXT,
@@ -739,7 +955,8 @@ class MySQLJobStore:
                     mail_action_token TEXT NULL,
                     mail_action_expires_at DATETIME NULL,
                     mail_action_sent_at DATETIME NULL,
-                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (owner_user_id, id)
                 )
                 """
             )
@@ -796,6 +1013,7 @@ class MySQLJobStore:
             self._migrate_users_is_admin_mysql(cur)
             self._bootstrap_default_user_mysql(cur)
             self._ensure_admin_flags_mysql(cur)
+            self._migrate_mysql_job_ownership_composite(cur)
 
             # Migrations for older MySQL schemas.
             def _add_col(sql: str):
@@ -808,6 +1026,46 @@ class MySQLJobStore:
             _add_col("ALTER TABLE jobs ADD COLUMN mail_action_token TEXT NULL")
             _add_col("ALTER TABLE jobs ADD COLUMN mail_action_expires_at DATETIME NULL")
             _add_col("ALTER TABLE jobs ADD COLUMN mail_action_sent_at DATETIME NULL")
+
+    def _default_job_owner_id_mysql_inline(self, cur) -> int:
+        cur.execute("SELECT id FROM users WHERE is_admin = 1 ORDER BY id ASC LIMIT 1")
+        row = cur.fetchone()
+        if row and row.get("id") is not None:
+            return int(row["id"])
+        cur.execute("SELECT MIN(id) as mid FROM users")
+        row = cur.fetchone()
+        if row and row.get("mid") is not None:
+            return int(row["mid"])
+        return 1
+
+    def _migrate_mysql_job_ownership_composite(self, cur):
+        try:
+            cur.execute(
+                """
+                SELECT COUNT(*) as c FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'jobs' AND COLUMN_NAME = 'owner_user_id'
+                """
+            )
+            row = cur.fetchone()
+            if row and int(row["c"]) > 0:
+                return
+        except Exception:
+            return
+
+        default_owner = self._default_job_owner_id_mysql_inline(cur)
+        log.info("MySQL: migrating jobs/seen_jobs to per-user ownership (default owner_user_id=%s)", default_owner)
+
+        cur.execute("ALTER TABLE jobs ADD COLUMN owner_user_id INT NULL")
+        cur.execute("UPDATE jobs SET owner_user_id = %s WHERE owner_user_id IS NULL", (default_owner,))
+        cur.execute("ALTER TABLE jobs MODIFY COLUMN owner_user_id INT NOT NULL")
+        cur.execute("ALTER TABLE jobs DROP PRIMARY KEY")
+        cur.execute("ALTER TABLE jobs ADD PRIMARY KEY (owner_user_id, id)")
+
+        cur.execute("ALTER TABLE seen_jobs ADD COLUMN owner_user_id INT NULL")
+        cur.execute("UPDATE seen_jobs SET owner_user_id = %s WHERE owner_user_id IS NULL", (default_owner,))
+        cur.execute("ALTER TABLE seen_jobs MODIFY COLUMN owner_user_id INT NOT NULL")
+        cur.execute("ALTER TABLE seen_jobs DROP PRIMARY KEY")
+        cur.execute("ALTER TABLE seen_jobs ADD PRIMARY KEY (owner_user_id, id)")
 
     def _migrate_users_is_admin_mysql(self, cur):
         try:
@@ -929,6 +1187,7 @@ class MySQLJobStore:
         if self.user_is_admin(int(user_id)):
             return False
         with self._conn() as cur:
+            cur.execute("DELETE FROM jobs WHERE owner_user_id = %s", (int(user_id),))
             cur.execute("DELETE FROM users WHERE id = %s", (int(user_id),))
             return cur.rowcount > 0
 
@@ -967,6 +1226,15 @@ class MySQLJobStore:
             out.setdefault(fe, None)
         return sorted(out.keys())
 
+    def get_worker_owner_user_id(self) -> int:
+        with self._conn() as cur:
+            return self._default_job_owner_id_mysql_inline(cur)
+
+    def resolve_scan_owner_user_id(self, notification_user_id: Optional[int]) -> int:
+        if notification_user_id is not None:
+            return int(notification_user_id)
+        return self.get_worker_owner_user_id()
+
     # ── Repo indexing / dedup ────────────────────────────────────────────
     def is_repo_indexed(self, repo_key: str) -> bool:
         with self._conn() as cur:
@@ -985,17 +1253,20 @@ class MySQLJobStore:
                 (repo_key,),
             )
 
-    def is_seen(self, job_id: str) -> bool:
+    def is_seen(self, owner_user_id: int, job_id: str) -> bool:
         with self._conn() as cur:
-            cur.execute("SELECT 1 FROM seen_jobs WHERE id = %s LIMIT 1", (job_id,))
+            cur.execute(
+                "SELECT 1 FROM seen_jobs WHERE owner_user_id = %s AND id = %s LIMIT 1",
+                (int(owner_user_id), job_id),
+            )
             row = cur.fetchone()
             return row is not None
 
-    def mark_seen(self, job_id: str):
+    def mark_seen(self, owner_user_id: int, job_id: str):
         with self._conn() as cur:
             cur.execute(
-                "INSERT IGNORE INTO seen_jobs (id, seen_at) VALUES (%s, NOW())",
-                (job_id,),
+                "INSERT IGNORE INTO seen_jobs (owner_user_id, id, seen_at) VALUES (%s, %s, NOW())",
+                (int(owner_user_id), job_id),
             )
 
     def seen_count(self) -> int:
@@ -1005,14 +1276,21 @@ class MySQLJobStore:
             return int(row["c"]) if row else 0
 
     # ── Jobs ────────────────────────────────────────────────────────────
-    def save_job(self, job: Job, score: float = 0.0, match_reasons: list = None):
+    def save_job(
+        self,
+        job: Job,
+        score: float = 0.0,
+        match_reasons: list = None,
+        *,
+        owner_user_id: int,
+    ):
         with self._conn() as cur:
             cur.execute(
                 """
                 INSERT INTO jobs (
-                    id, company, title, location, apply_url, source, date_posted,
+                    owner_user_id, id, company, title, location, apply_url, source, date_posted,
                     is_remote, score, match_reasons, status, body
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'pending', %s)
                 ON DUPLICATE KEY UPDATE
                     company=VALUES(company),
                     title=VALUES(title),
@@ -1027,6 +1305,7 @@ class MySQLJobStore:
                     body=VALUES(body)
                 """,
                 (
+                    int(owner_user_id),
                     job.id,
                     job.company,
                     job.title,
@@ -1055,7 +1334,7 @@ class MySQLJobStore:
     def _b64url(data: bytes) -> str:
         return base64.urlsafe_b64encode(data).decode("ascii").rstrip("=")
 
-    def issue_mail_action_token(self, job_id: str) -> tuple[str, str]:
+    def issue_mail_action_token(self, owner_user_id: int, job_id: str) -> tuple[str, str]:
         secret = self._mail_signing_secret()
         if not secret:
             raise RuntimeError("MAIL_SIGNING_SECRET/SESSION_SECRET_KEY missing; cannot sign mail action links.")
@@ -1063,7 +1342,8 @@ class MySQLJobStore:
         exp = datetime.utcnow() + timedelta(hours=max(int(config.MAIL_ACTION_EXPIRY_HOURS), 1))
         exp_unix = str(int(exp.timestamp()))
         rand = secrets.token_urlsafe(16)
-        payload = f"v1|{job_id}|{exp_unix}|{rand}"
+        ou = int(owner_user_id)
+        payload = f"v2|{ou}|{job_id}|{exp_unix}|{rand}"
         sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
         token = f"{payload}|{self._b64url(sig)}"
 
@@ -1073,55 +1353,94 @@ class MySQLJobStore:
                 UPDATE jobs
                 SET mail_action_token = %s,
                     mail_action_expires_at = %s
-                WHERE id = %s
+                WHERE owner_user_id = %s AND id = %s
                 """,
-                (token, exp, job_id),
+                (token, exp, ou, job_id),
             )
 
         return token, exp.isoformat()
 
-    def verify_mail_action_token(self, job_id: str, token: str) -> bool:
+    def parse_and_verify_mail_action_token(self, token: str) -> Optional[tuple[Optional[int], str]]:
         secret = self._mail_signing_secret()
         if not secret or not token:
-            return False
-
+            return None
         parts = token.split("|")
-        if len(parts) != 5 or parts[0] != "v1":
-            return False
-        tok_job_id, exp_unix_s, rand, sig_b64 = parts[1], parts[2], parts[3], parts[4]
-        if tok_job_id != job_id:
-            return False
-        try:
-            exp_unix = int(exp_unix_s)
-        except Exception:
-            return False
-        if int(datetime.utcnow().timestamp()) > exp_unix:
-            return False
+        if len(parts) == 6 and parts[0] == "v2":
+            try:
+                owner_user_id = int(parts[1])
+                job_id = parts[2]
+                exp_unix_s = parts[3]
+                rand = parts[4]
+                sig_b64 = parts[5]
+                exp_unix = int(exp_unix_s)
+            except Exception:
+                return None
+            if int(datetime.utcnow().timestamp()) > exp_unix:
+                return None
+            payload = f"v2|{owner_user_id}|{job_id}|{exp_unix_s}|{rand}"
+            expected_sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+            try:
+                got_sig = base64.urlsafe_b64decode(sig_b64 + "==")
+            except Exception:
+                return None
+            if not hmac.compare_digest(expected_sig, got_sig):
+                return None
+            return (owner_user_id, job_id)
+        if len(parts) == 5 and parts[0] == "v1":
+            job_id = parts[1]
+            exp_unix_s = parts[2]
+            rand = parts[3]
+            sig_b64 = parts[4]
+            try:
+                exp_unix = int(exp_unix_s)
+            except Exception:
+                return None
+            if int(datetime.utcnow().timestamp()) > exp_unix:
+                return None
+            payload = f"v1|{job_id}|{exp_unix_s}|{rand}"
+            expected_sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
+            try:
+                got_sig = base64.urlsafe_b64decode(sig_b64 + "==")
+            except Exception:
+                return None
+            if not hmac.compare_digest(expected_sig, got_sig):
+                return None
+            return (None, job_id)
+        return None
 
-        payload = f"v1|{job_id}|{exp_unix_s}|{rand}"
-        expected_sig = hmac.new(secret.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256).digest()
-        try:
-            got_sig = base64.urlsafe_b64decode(sig_b64 + "==")
-        except Exception:
+    def verify_mail_action_token(self, job_id: str, token: str, owner_user_id: Optional[int] = None) -> bool:
+        meta = self.parse_and_verify_mail_action_token(token)
+        if not meta:
             return False
-        return hmac.compare_digest(expected_sig, got_sig)
+        tok_owner, tok_job = meta
+        if tok_job != job_id:
+            return False
+        if tok_owner is not None:
+            return owner_user_id is None or int(tok_owner) == int(owner_user_id)
+        return True
 
-    def get_mail_action_token_row(self, job_id: str) -> Optional[dict[str, Any]]:
+    def get_mail_action_token_row(self, owner_user_id: int, job_id: str) -> Optional[dict[str, Any]]:
         with self._conn() as cur:
             cur.execute(
-                "SELECT mail_action_token, mail_action_expires_at FROM jobs WHERE id = %s LIMIT 1",
-                (job_id,),
+                "SELECT mail_action_token, mail_action_expires_at FROM jobs WHERE owner_user_id = %s AND id = %s LIMIT 1",
+                (int(owner_user_id), job_id),
             )
             row = cur.fetchone()
             return self._normalize_row(dict(row)) if row else None
 
-    def mark_mail_action_sent(self, job_id: str):
+    def mark_mail_action_sent(self, owner_user_id: int, job_id: str):
         with self._conn() as cur:
-            cur.execute("UPDATE jobs SET mail_action_sent_at = NOW() WHERE id = %s", (job_id,))
+            cur.execute(
+                "UPDATE jobs SET mail_action_sent_at = NOW() WHERE owner_user_id = %s AND id = %s",
+                (int(owner_user_id), job_id),
+            )
 
-    def get_mail_action_sent_at(self, job_id: str) -> Optional[str]:
+    def get_mail_action_sent_at(self, owner_user_id: int, job_id: str) -> Optional[str]:
         with self._conn() as cur:
-            cur.execute("SELECT mail_action_sent_at FROM jobs WHERE id = %s LIMIT 1", (job_id,))
+            cur.execute(
+                "SELECT mail_action_sent_at FROM jobs WHERE owner_user_id = %s AND id = %s LIMIT 1",
+                (int(owner_user_id), job_id),
+            )
             row = cur.fetchone()
             if not row:
                 return None
@@ -1130,7 +1449,14 @@ class MySQLJobStore:
                 return val.isoformat()
             return str(val) if val is not None else None
 
-    def update_status(self, job_id: str, status: str, notes: str = "", cover_letter: str = ""):
+    def update_status(
+        self,
+        owner_user_id: int,
+        job_id: str,
+        status: str,
+        notes: str = "",
+        cover_letter: str = "",
+    ):
         with self._conn() as cur:
             cur.execute(
                 """
@@ -1139,9 +1465,9 @@ class MySQLJobStore:
                     notes = %s,
                     cover_letter = COALESCE(NULLIF(%s, ''), cover_letter),
                     applied_at = CASE WHEN %s = 'applied' THEN NOW() ELSE applied_at END
-                WHERE id = %s
+                WHERE owner_user_id = %s AND id = %s
                 """,
-                (status, notes, cover_letter, status, job_id),
+                (status, notes, cover_letter, status, int(owner_user_id), job_id),
             )
 
     def log_application(
@@ -1183,31 +1509,55 @@ class MySQLJobStore:
                 ),
             )
 
-    def set_job_resume_pdf(self, job_id: str, resume_pdf_path: str):
+    def set_job_resume_pdf(self, owner_user_id: int, job_id: str, resume_pdf_path: str):
         with self._conn() as cur:
             cur.execute(
                 """
                 UPDATE jobs
                 SET resume_pdf_path = %s,
                     resume_generated_at = NOW()
-                WHERE id = %s
+                WHERE owner_user_id = %s AND id = %s
                 """,
-                (resume_pdf_path, job_id),
+                (resume_pdf_path, int(owner_user_id), job_id),
             )
 
     # ── Job reads ───────────────────────────────────────────────────────
-    def get_job(self, job_id: str) -> Optional[dict]:
+    def get_job(self, owner_user_id: int, job_id: str) -> Optional[dict]:
         with self._conn() as cur:
-            cur.execute("SELECT * FROM jobs WHERE id = %s", (job_id,))
+            cur.execute(
+                "SELECT * FROM jobs WHERE owner_user_id = %s AND id = %s",
+                (int(owner_user_id), job_id),
+            )
             row = cur.fetchone()
             return self._normalize_row(dict(row)) if row else None
 
-    def get_by_status(self, status: str, limit: int = 200) -> list[dict]:
+    def find_jobs_by_canonical_id(self, job_id: str) -> list[dict]:
         with self._conn() as cur:
-            cur.execute(
-                "SELECT * FROM jobs WHERE status = %s ORDER BY score DESC LIMIT %s",
-                (status, int(limit)),
-            )
+            cur.execute("SELECT * FROM jobs WHERE id = %s", (job_id,))
+            rows = cur.fetchall() or []
+            return [self._normalize_row(dict(r)) for r in rows]
+
+    def get_by_status(
+        self,
+        status: str,
+        limit: int = 200,
+        *,
+        owner_user_id: Optional[int] = None,
+        viewer_is_admin: bool = False,
+    ) -> list[dict]:
+        with self._conn() as cur:
+            if viewer_is_admin:
+                cur.execute(
+                    "SELECT * FROM jobs WHERE status = %s ORDER BY score DESC LIMIT %s",
+                    (status, int(limit)),
+                )
+            elif owner_user_id is not None:
+                cur.execute(
+                    "SELECT * FROM jobs WHERE status = %s AND owner_user_id = %s ORDER BY score DESC LIMIT %s",
+                    (status, int(owner_user_id), int(limit)),
+                )
+            else:
+                cur.execute("SELECT * FROM jobs WHERE 1=0", ())
             rows = cur.fetchall() or []
             return [self._normalize_row(dict(r)) for r in rows]
 
@@ -1263,19 +1613,36 @@ class MySQLJobStore:
             "auto_apply_enabled": self.get_auto_apply_enabled(),
         }
 
-    def stats(self) -> dict:
+    def stats(self, *, owner_user_id: Optional[int] = None, viewer_is_admin: bool = False) -> dict:
         with self._conn() as cur:
-            cur.execute(
-                """
-                SELECT
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status='applied' THEN 1 ELSE 0 END) as applied,
-                    SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
-                    SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) as skipped,
-                    ROUND(AVG(score), 2) as avg_score
-                FROM jobs
-                """
-            )
+            if viewer_is_admin:
+                cur.execute(
+                    """
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status='applied' THEN 1 ELSE 0 END) as applied,
+                        SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
+                        SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) as skipped,
+                        ROUND(AVG(score), 2) as avg_score
+                    FROM jobs
+                    """
+                )
+            elif owner_user_id is not None:
+                cur.execute(
+                    """
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status='applied' THEN 1 ELSE 0 END) as applied,
+                        SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) as pending,
+                        SUM(CASE WHEN status='skipped' THEN 1 ELSE 0 END) as skipped,
+                        ROUND(AVG(score), 2) as avg_score
+                    FROM jobs
+                    WHERE owner_user_id = %s
+                    """,
+                    (int(owner_user_id),),
+                )
+            else:
+                return {}
             row = cur.fetchone()
             return self._normalize_row(dict(row)) if row else {}
 

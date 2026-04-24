@@ -107,11 +107,12 @@ def main() -> int:
         is_remote=True,
     )
     store = JobStore()
-    store.save_job(job, score=0.88, match_reasons=["Synthetic test row for approval email."])
+    owner_uid = store.get_worker_owner_user_id()
+    store.save_job(job, score=0.88, match_reasons=["Synthetic test row for approval email."], owner_user_id=owner_uid)
     notifier = Notifier()
     recipients = store.resolve_scan_notification_recipients(None)
     notifier.send_match_approval_request_emails(
-        [(job, 0.88, ["Synthetic test", "Heuristic-style reason"])],
+        [(job, 0.88, ["Synthetic test", "Heuristic-style reason"], owner_uid)],
         store=store,
         recipients=recipients,
     )

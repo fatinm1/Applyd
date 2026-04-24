@@ -88,6 +88,39 @@ def _session_user_id(request: Request) -> Optional[int]:
     return None
 
 
+def _resolve_job_row_for_session(request: Request, job_id: str) -> tuple[int, dict[str, Any]]:
+    """
+    Returns (owner_user_id, job_row) for the authenticated viewer.
+    Admins may disambiguate with ?owner_user_id= when several users share the same canonical job id.
+    """
+    uid = _session_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    is_adm = store.user_is_admin(int(uid))
+    if is_adm:
+        qp = (request.query_params.get("owner_user_id") or "").strip()
+        if qp:
+            oid = int(qp)
+            row = store.get_job(oid, job_id)
+            if not row:
+                raise HTTPException(status_code=404, detail="Job not found")
+            return oid, dict(row)
+        matches = store.find_jobs_by_canonical_id(job_id)
+        if not matches:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if len(matches) > 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Multiple accounts have this job id; add ?owner_user_id= to the request URL.",
+            )
+        r = dict(matches[0])
+        return int(r["owner_user_id"]), r
+    row = store.get_job(int(uid), job_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return int(uid), dict(row)
+
+
 class LoginRequest(BaseModel):
     username: str
     password: str
@@ -132,11 +165,18 @@ def _job_row_to_response(job_row: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         match_reasons = []
 
-    return {
+    out: dict[str, Any] = {
         **job_row,
         "match_reasons": match_reasons,
         "is_remote": bool(job_row.get("is_remote")),
     }
+    ou = out.get("owner_user_id")
+    if ou is not None:
+        try:
+            out["owner_user_id"] = int(ou)
+        except (TypeError, ValueError):
+            pass
+    return out
 
 
 def _background_worker():
@@ -358,6 +398,7 @@ def logout(request: Request):
 
 @app.get("/api/jobs")
 def list_jobs(
+    request: Request,
     status: str = "pending",
     limit: int = 200,
     _user: str = Depends(_require_auth),
@@ -366,39 +407,47 @@ def list_jobs(
     if status not in allowed:
         raise HTTPException(status_code=400, detail=f"Invalid status. Allowed: {sorted(allowed)}")
 
-    jobs = store.get_by_status(status, limit=limit)
+    uid = _session_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    is_adm = store.user_is_admin(int(uid))
+    jobs = store.get_by_status(status, limit=limit, owner_user_id=int(uid), viewer_is_admin=is_adm)
     return {"jobs": [_job_row_to_response(j) for j in jobs]}
 
 
 @app.get("/api/jobs/{job_id}")
-def get_job(job_id: str, _user: str = Depends(_require_auth)):
-    job_row = store.get_job(job_id)
-    if not job_row:
-        raise HTTPException(status_code=404, detail="Job not found")
+def get_job(job_id: str, request: Request, _user: str = Depends(_require_auth)):
+    _owner_uid, job_row = _resolve_job_row_for_session(request, job_id)
     return {"job": _job_row_to_response(job_row)}
 
 
-def _update_status(job_id: str, status: str, notes: str = "", cover_letter: str = "") -> dict[str, Any]:
-    if not store.get_job(job_id):
+def _update_status(
+    owner_user_id: int,
+    job_id: str,
+    status: str,
+    notes: str = "",
+    cover_letter: str = "",
+) -> dict[str, Any]:
+    if not store.get_job(owner_user_id, job_id):
         raise HTTPException(status_code=404, detail="Job not found")
 
-    store.update_status(job_id, status=status, notes=notes, cover_letter=cover_letter)
-    job_row = store.get_job(job_id)
+    store.update_status(owner_user_id, job_id, status=status, notes=notes, cover_letter=cover_letter)
+    job_row = store.get_job(owner_user_id, job_id)
     if not job_row:
         raise HTTPException(status_code=404, detail="Job not found after update")
     return _job_row_to_response(job_row)
 
 
-def _approve_job_core(job_id: str) -> dict[str, Any]:
+def _approve_job_core(owner_user_id: int, job_id: str) -> dict[str, Any]:
     """
     Shared approval path used by the dashboard and email one-click links.
     """
-    _update_status(job_id, status="approved")
+    _update_status(owner_user_id, job_id, status="approved")
 
     # Generate and cache a job-specific resume PDF at approval time.
     # This keeps Phase 2 simple: it just attaches/uploads the cached PDF.
     try:
-        job_row = store.get_job(job_id)
+        job_row = store.get_job(owner_user_id, job_id)
         if job_row:
             resume_path = job_row.get("resume_pdf_path") or ""
             if not resume_path:
@@ -413,12 +462,12 @@ def _approve_job_core(job_id: str) -> dict[str, Any]:
                     body=job_row.get("body") or "",
                     is_remote=bool(job_row.get("is_remote")),
                 )
-                resume_path = generate_tailored_resume_pdf(job)
-                store.set_job_resume_pdf(job_id, resume_path)
+                resume_path = generate_tailored_resume_pdf(job, owner_user_id=owner_user_id)
+                store.set_job_resume_pdf(owner_user_id, job_id, resume_path)
     except Exception as e:
         log.exception(f"Failed to generate tailored resume for {job_id}: {e}")
 
-    job_row = store.get_job(job_id)
+    job_row = store.get_job(owner_user_id, job_id)
     if not job_row:
         raise HTTPException(status_code=404, detail="Job not found")
     return _job_row_to_response(job_row)
@@ -453,29 +502,45 @@ def _mail_action_page(title: str, body: str, ok: bool = True) -> HTMLResponse:
     return HTMLResponse(content=html, status_code=200 if ok else 400)
 
 
-def _verify_mail_token(job_id: str, token: str) -> None:
-    row = store.get_mail_action_token_row(job_id)
+def _mail_resolve_owner_and_verify_token(job_id: str, token: str) -> int:
+    """
+    Validates the signed mail token and returns owner_user_id for the jobs row.
+    """
+    meta = store.parse_and_verify_mail_action_token(token)
+    if not meta:
+        raise HTTPException(status_code=400, detail="Invalid/expired mail token")
+    tok_owner, tok_job = meta
+    if tok_job != job_id:
+        raise HTTPException(status_code=400, detail="Invalid mail token")
+    if tok_owner is not None:
+        owner_uid = int(tok_owner)
+    else:
+        rows = store.find_jobs_by_canonical_id(job_id)
+        if len(rows) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="Legacy approval link is ambiguous; request a new approval email from a current scan.",
+            )
+        owner_uid = int(rows[0]["owner_user_id"])
+    row = store.get_mail_action_token_row(owner_uid, job_id)
     if not row or not row.get("mail_action_token"):
         raise HTTPException(status_code=400, detail="Missing mail token for job")
-
     if row.get("mail_action_token") != token:
         raise HTTPException(status_code=400, detail="Invalid mail token")
-
-    if not store.verify_mail_action_token(job_id, token):
-        raise HTTPException(status_code=400, detail="Invalid/expired mail token")
+    return owner_uid
 
 
 @app.get("/api/mail/approve", response_class=HTMLResponse)
 def mail_approve(job_id: str, token: str):
     try:
-        job_row = store.get_job(job_id)
+        owner_uid = _mail_resolve_owner_and_verify_token(job_id, token)
+        job_row = store.get_job(owner_uid, job_id)
         if not job_row:
             return _mail_action_page("Not found", _MAIL_JOB_MISSING_HELP, ok=False)
         if (job_row.get("status") or "pending") != "pending":
             return _mail_action_page("Already handled", f"This job is no longer pending (status={job_row.get('status')}).", ok=False)
 
-        _verify_mail_token(job_id, token)
-        _approve_job_core(job_id)
+        _approve_job_core(owner_uid, job_id)
         return _mail_action_page("Approved", "This job was approved. If auto-apply is enabled, it will be processed on the next run.")
     except HTTPException as e:
         return _mail_action_page("Could not approve", str(e.detail), ok=False)
@@ -484,39 +549,40 @@ def mail_approve(job_id: str, token: str):
 @app.get("/api/mail/reject", response_class=HTMLResponse)
 def mail_reject(job_id: str, token: str):
     try:
-        job_row = store.get_job(job_id)
+        owner_uid = _mail_resolve_owner_and_verify_token(job_id, token)
+        job_row = store.get_job(owner_uid, job_id)
         if not job_row:
             return _mail_action_page("Not found", _MAIL_JOB_MISSING_HELP, ok=False)
         if (job_row.get("status") or "pending") != "pending":
             return _mail_action_page("Already handled", f"This job is no longer pending (status={job_row.get('status')}).", ok=False)
 
-        _verify_mail_token(job_id, token)
-        store.update_status(job_id, status="rejected", notes="Rejected via email link")
+        store.update_status(owner_uid, job_id, status="rejected", notes="Rejected via email link")
         return _mail_action_page("Rejected", "This job was rejected.")
     except HTTPException as e:
         return _mail_action_page("Could not reject", str(e.detail), ok=False)
 
 
 @app.post("/api/jobs/{job_id}/approve")
-def approve_job(job_id: str, _user: str = Depends(_require_auth)):
-    return {"job": _approve_job_core(job_id)}
+def approve_job(job_id: str, request: Request, _user: str = Depends(_require_auth)):
+    owner_uid, _row = _resolve_job_row_for_session(request, job_id)
+    return {"job": _approve_job_core(owner_uid, job_id)}
 
 
 @app.post("/api/jobs/{job_id}/skip")
-def skip_job(job_id: str, _user: str = Depends(_require_auth)):
-    return {"job": _update_status(job_id, status="skipped")}
+def skip_job(job_id: str, request: Request, _user: str = Depends(_require_auth)):
+    owner_uid, _row = _resolve_job_row_for_session(request, job_id)
+    return {"job": _update_status(owner_uid, job_id, status="skipped")}
 
 
 @app.post("/api/jobs/{job_id}/reject")
-def reject_job(job_id: str, payload: RejectRequest, _user: str = Depends(_require_auth)):
-    return {"job": _update_status(job_id, status="rejected", notes=payload.notes)}
+def reject_job(job_id: str, payload: RejectRequest, request: Request, _user: str = Depends(_require_auth)):
+    owner_uid, _row = _resolve_job_row_for_session(request, job_id)
+    return {"job": _update_status(owner_uid, job_id, status="rejected", notes=payload.notes)}
 
 
 @app.post("/api/jobs/{job_id}/cover-letter")
-def generate_cover_letter_endpoint(job_id: str, _user: str = Depends(_require_auth)):
-    job_row = store.get_job(job_id)
-    if not job_row:
-        raise HTTPException(status_code=404, detail="Job not found")
+def generate_cover_letter_endpoint(job_id: str, request: Request, _user: str = Depends(_require_auth)):
+    owner_uid, job_row = _resolve_job_row_for_session(request, job_id)
 
     job = Job(
         id=job_row["id"],
@@ -532,14 +598,18 @@ def generate_cover_letter_endpoint(job_id: str, _user: str = Depends(_require_au
 
     letter = generate_cover_letter(job)
     # Preserve current status; only update cover letter.
-    store.update_status(job_id, status=job_row.get("status") or "pending", cover_letter=letter)
-    job_row = store.get_job(job_id)
+    store.update_status(owner_uid, job_id, status=job_row.get("status") or "pending", cover_letter=letter)
+    job_row = store.get_job(owner_uid, job_id)
     return {"job": _job_row_to_response(job_row), "cover_letter": letter}
 
 
 @app.get("/api/stats")
-def stats(_user: str = Depends(_require_auth)):
-    return store.stats()
+def stats(request: Request, _user: str = Depends(_require_auth)):
+    uid = _session_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    is_adm = store.user_is_admin(int(uid))
+    return store.stats(owner_user_id=int(uid), viewer_is_admin=is_adm)
 
 
 @app.get("/api/agent/state")

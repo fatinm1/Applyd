@@ -22,6 +22,18 @@ from resume_tailer import generate_tailored_resume_pdf
 log = logging.getLogger(__name__)
 
 
+def _digest_match_tuple(item: tuple) -> tuple[Job, float, list[str]]:
+    """Agent may pass (job, score, reasons) or (job, score, reasons, owner_user_id)."""
+    job, score, reasons = item[0], item[1], item[2]
+    return job, score, reasons
+
+
+def _approval_match_tuple(item: tuple) -> tuple[Job, float, list[str], int]:
+    if len(item) >= 4:
+        return item[0], item[1], item[2], int(item[3])
+    raise ValueError("approval emails require (job, score, reasons, owner_user_id) rows")
+
+
 class Notifier:
     @staticmethod
     def _smtp_configured() -> bool:
@@ -51,7 +63,7 @@ class Notifier:
         recipients: Optional[List[str]] = None,
     ):
         """Send a digest of new job matches. matches = [(job, score, reasons), ...]"""
-        matches_sorted = sorted(matches, key=lambda x: x[1], reverse=True)
+        matches_sorted = sorted(matches, key=lambda x: x[1], reverse=True)  # score at index 1
 
         if config.SLACK_WEBHOOK_URL:
             self._send_slack(matches_sorted)
@@ -70,7 +82,7 @@ class Notifier:
 
     def send_match_approval_request_emails(
         self,
-        matches: list[tuple[Job, float, list[str]]],
+        matches: list[tuple],
         store: Optional[Any] = None,
         *,
         recipients: Optional[List[str]] = None,
@@ -105,32 +117,33 @@ class Notifier:
 
         base = config.PUBLIC_BASE_URL.rstrip("/")
 
-        for job, score, reasons in matches:
+        for item in matches:
+            job, score, reasons, owner_uid = _approval_match_tuple(item)
             try:
                 # Avoid spamming duplicate approval emails for the same job.
-                sent_at = store.get_mail_action_sent_at(job.id)
+                sent_at = store.get_mail_action_sent_at(owner_uid, job.id)
                 if sent_at:
                     continue
 
-                token, _exp_iso = store.issue_mail_action_token(job.id)
+                token, _exp_iso = store.issue_mail_action_token(owner_uid, job.id)
                 tok_q = quote(token, safe="")
 
                 approve_url = f"{base}/api/mail/approve?job_id={quote(job.id)}&token={tok_q}"
                 reject_url = f"{base}/api/mail/reject?job_id={quote(job.id)}&token={tok_q}"
 
                 # Ensure we have a cover letter for attachment/preview.
-                row = store.get_job(job.id) or {}
+                row = store.get_job(owner_uid, job.id) or {}
                 cover = (row.get("cover_letter") or "").strip()
                 if not cover:
                     cover = generate_cover_letter(job)
-                    store.update_status(job.id, status="pending", cover_letter=cover)
+                    store.update_status(owner_uid, job.id, status="pending", cover_letter=cover)
 
                 # Ensure we have the resume PDF that would be submitted.
                 resume_path = (row.get("resume_pdf_path") or "").strip()
                 if not resume_path:
-                    resume_path = generate_tailored_resume_pdf(job)
+                    resume_path = generate_tailored_resume_pdf(job, owner_user_id=owner_uid)
                     if resume_path:
-                        store.set_job_resume_pdf(job.id, resume_path)
+                        store.set_job_resume_pdf(owner_uid, job.id, resume_path)
 
                 pct = f"{score:.0%}"
                 loc = "Remote" if job.is_remote else (job.location or "—")
@@ -213,7 +226,7 @@ Attachments:
                         log.error("Approval request email failed for %s → %s: %s", job.display, to_addr, send_exc)
 
                 if all_ok:
-                    store.mark_mail_action_sent(job.id)
+                    store.mark_mail_action_sent(owner_uid, job.id)
                     log.info("Approval request email sent for %s (%s recipient(s))", job.display, len(tos))
             except Exception as e:
                 log.error(f"Approval request email failed for {job.display}: {e}")
@@ -376,7 +389,8 @@ Attachments:
             }
         ]
 
-        for job, score, reasons in matches[:10]:  # Slack has block limits
+        for item in matches[:10]:  # Slack has block limits
+            job, score, reasons = _digest_match_tuple(item)
             pct = f"{score:.0%}"
             loc = "🌐 Remote" if job.is_remote else job.location or "—"
             top_reasons = " · ".join(reasons[:2]) if reasons else ""
@@ -421,7 +435,8 @@ Attachments:
         subject = f"🎯 Job Agent: {len(matches)} new match{'es' if len(matches) != 1 else ''}"
 
         html_rows = ""
-        for job, score, reasons in matches:
+        for item in matches:
+            job, score, reasons = _digest_match_tuple(item)
             pct = f"{score:.0%}"
             loc = "Remote" if job.is_remote else job.location or "—"
             reasons_str = "<br>".join(f"• {r}" for r in reasons[:4])

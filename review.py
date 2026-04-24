@@ -23,7 +23,7 @@ store = JobStore()
 
 def cmd_review():
     """Interactive review of pending jobs."""
-    jobs = store.get_pending()
+    jobs = store.get_by_status("pending", limit=500, viewer_is_admin=True)
     matches = [j for j in jobs if j["score"] >= config.MATCH_THRESHOLD]
 
     if not matches:
@@ -51,7 +51,8 @@ def cmd_review():
         while True:
             cmd = input("  > ").strip().lower()
             if cmd in ("a", "approve"):
-                store.update_status(job["id"], "approved")
+                owner_uid = int(job["owner_user_id"])
+                store.update_status(owner_uid, job["id"], "approved")
 
                 # Generate and cache a tailored resume PDF for this job.
                 try:
@@ -66,19 +67,19 @@ def cmd_review():
                         body=job.get("body") or "",
                         is_remote=bool(job["is_remote"]),
                     )
-                    resume_path = generate_tailored_resume_pdf(j)
-                    store.set_job_resume_pdf(job["id"], resume_path)
+                    resume_path = generate_tailored_resume_pdf(j, owner_user_id=owner_uid)
+                    store.set_job_resume_pdf(owner_uid, job["id"], resume_path)
                 except Exception as e:
                     print(f"  ⚠ Could not generate tailored resume: {e}")
                 print("  ✅ Approved — will apply on next auto-apply run\n")
                 break
             elif cmd in ("s", "skip", ""):
-                store.update_status(job["id"], "skipped")
+                store.update_status(int(job["owner_user_id"]), job["id"], "skipped")
                 print("  ⏭  Skipped\n")
                 break
             elif cmd in ("r", "reject"):
                 note = input("  Reason (optional): ").strip()
-                store.update_status(job["id"], "rejected", notes=note)
+                store.update_status(int(job["owner_user_id"]), job["id"], "rejected", notes=note)
                 print("  ❌ Rejected\n")
                 break
             elif cmd in ("c", "cover"):
@@ -93,7 +94,7 @@ def cmd_review():
                 print("-"*50)
                 print(letter)
                 print("-"*50 + "\n")
-                store.update_status(job["id"], job["status"], cover_letter=letter)
+                store.update_status(int(job["owner_user_id"]), job["id"], job["status"], cover_letter=letter)
             elif cmd in ("q", "quit"):
                 print("\n  👋 Exiting review.\n")
                 return
@@ -125,7 +126,7 @@ def cmd_list():
 
 def cmd_stats():
     """Print application statistics."""
-    s = store.stats()
+    s = store.stats(viewer_is_admin=True)
     print(f"""
   JOB AGENT STATS
   ───────────────
@@ -139,12 +140,13 @@ def cmd_stats():
 
 def cmd_cover(job_id: str):
     """Generate a cover letter for a specific job."""
-    jobs = store.get_all()
+    jobs = store.get_all(limit=50000)
     job_row = next((j for j in jobs if j["id"] == job_id), None)
     if not job_row:
         print(f"Job {job_id!r} not found.")
         return
 
+    owner_uid = int(job_row["owner_user_id"])
     j = Job(
         id=job_row["id"], company=job_row["company"], title=job_row["title"],
         location=job_row["location"], apply_url=job_row["apply_url"],
@@ -154,7 +156,7 @@ def cmd_cover(job_id: str):
     print(f"\nGenerating cover letter for {j.company} — {j.title}...\n")
     letter = generate_cover_letter(j)
     print(letter)
-    store.update_status(j.id, job_row["status"], cover_letter=letter)
+    store.update_status(owner_uid, j.id, job_row["status"], cover_letter=letter)
     print("\n[Saved to database]")
 
 

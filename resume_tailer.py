@@ -172,10 +172,13 @@ JSON OUTPUT FORMAT EXAMPLE:
     )
 
 
-def generate_tailored_resume_pdf(job: Job) -> str:
+def generate_tailored_resume_pdf(job: Job, *, owner_user_id: Optional[int] = None) -> str:
     """
     Returns a path to a tailored resume PDF.
     If tailoring/compilation fails, returns `config.RESUME_PATH` when possible.
+
+    `owner_user_id` scopes the output directory so different dashboard users never
+    clobber each other's compiled PDFs for the same canonical job id.
     """
     if not config.TAILORED_RESUME_ENABLED:
         return config.RESUME_PATH
@@ -184,7 +187,8 @@ def generate_tailored_resume_pdf(job: Job) -> str:
     if not os.path.exists(template_path):
         raise FileNotFoundError(f"Resume template not found at {template_path!r}")
 
-    out_dir = os.path.join(config.TAILORED_RESUME_DIR, job.id)
+    scope = str(int(owner_user_id)) if owner_user_id is not None else "_"
+    out_dir = os.path.join(config.TAILORED_RESUME_DIR, scope, job.id)
     pdf_path = os.path.join(out_dir, "resume.pdf")
     if os.path.exists(pdf_path):
         return pdf_path

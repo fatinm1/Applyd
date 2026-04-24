@@ -1,5 +1,7 @@
 export type Job = {
   id: string;
+  /** Dashboard user who owns this queue row (matches server `jobs.owner_user_id`). */
+  owner_user_id: number;
   company: string;
   title: string;
   location: string;

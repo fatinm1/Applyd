@@ -22,15 +22,19 @@ function scoreToPct(score: number | null | undefined) {
   return `${Math.round(score * 100)}%`;
 }
 
+function jobRowKey(job: Pick<Job, "owner_user_id" | "id">) {
+  return `${job.owner_user_id}:${job.id}`;
+}
+
 export default function DashboardPage() {
   const router = useRouter();
 
   const [statusView, setStatusView] = useState<"pending" | "applied">("pending");
   const [jobs, setJobs] = useState<Job[]>([]);
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [selectedJobKey, setSelectedJobKey] = useState<string | null>(null);
   const selectedJob = useMemo(
-    () => jobs.find((j) => j.id === selectedJobId) ?? null,
-    [jobs, selectedJobId],
+    () => jobs.find((j) => jobRowKey(j) === selectedJobKey) ?? null,
+    [jobs, selectedJobKey],
   );
 
   const [agentState, setAgentState] = useState<{ agent_enabled: boolean; auto_apply_enabled: boolean } | null>(
@@ -64,7 +68,9 @@ export default function DashboardPage() {
       const jobsRes = await listJobsApi(statusView, limit);
       const nextJobs: Job[] = jobsRes.jobs ?? [];
       setJobs(nextJobs);
-      setSelectedJobId((prev) => (prev && nextJobs.some((j) => j.id === prev) ? prev : nextJobs[0]?.id ?? null));
+      setSelectedJobKey((prev) =>
+        prev && nextJobs.some((j) => jobRowKey(j) === prev) ? prev : (nextJobs[0] ? jobRowKey(nextJobs[0]) : null),
+      );
     } catch (err: any) {
       if (err?.status === 401) router.push("/login");
       setError(err?.message ?? "Failed to load jobs");
@@ -165,14 +171,15 @@ export default function DashboardPage() {
     }
   }
 
-  async function act(action: "approve" | "skip" | "reject", jobId: string) {
+  async function act(action: "approve" | "skip" | "reject", job: Job) {
     if (actionLoading) return;
-    setActionLoading(jobId);
+    setActionLoading(jobRowKey(job));
     setError(null);
     try {
-      if (action === "approve") await approveJobApi(jobId);
-      if (action === "skip") await skipJobApi(jobId);
-      if (action === "reject") await rejectJobApi(jobId, rejectNotes);
+      const oid = job.owner_user_id;
+      if (action === "approve") await approveJobApi(job.id, oid);
+      if (action === "skip") await skipJobApi(job.id, oid);
+      if (action === "reject") await rejectJobApi(job.id, rejectNotes, oid);
       setRejectNotes("");
       await refresh();
       await refreshAgentState();
@@ -184,12 +191,12 @@ export default function DashboardPage() {
     }
   }
 
-  async function generateCover(jobId: string) {
+  async function generateCover(job: Job) {
     if (coverLoading) return;
     setCoverLoading(true);
     setError(null);
     try {
-      await coverLetterApi(jobId);
+      await coverLetterApi(job.id, job.owner_user_id);
       await refresh();
     } catch (err: any) {
       if (err?.status === 401) router.push("/login");
@@ -277,13 +284,13 @@ export default function DashboardPage() {
             ) : (
               <ul className="space-y-2">
                 {jobs.map((job) => {
-                  const isSelected = job.id === selectedJobId;
+                  const isSelected = jobRowKey(job) === selectedJobKey;
                   return (
-                    <li key={job.id}>
+                    <li key={jobRowKey(job)}>
                       <button
                         type="button"
                         className="w-full text-left border border-[var(--border)] p-3 cyber-chamfer-sm transition-all hover:border-[var(--accent)]"
-                        onClick={() => setSelectedJobId(job.id)}
+                        onClick={() => setSelectedJobKey(jobRowKey(job))}
                         style={{
                           boxShadow: isSelected ? "var(--box-shadow-neon)" : "none",
                           borderColor: isSelected ? "var(--accent)" : undefined,
@@ -367,7 +374,7 @@ export default function DashboardPage() {
                   {statusView === "pending" ? (
                     <button
                       className="cyber-button cyber-chamfer-sm w-full mt-3"
-                      onClick={() => generateCover(selectedJob.id)}
+                      onClick={() => generateCover(selectedJob)}
                       disabled={coverLoading}
                     >
                       {coverLoading ? "GENERATING..." : "GENERATE"}
@@ -388,22 +395,22 @@ export default function DashboardPage() {
                       <div className="grid grid-cols-3 gap-2">
                         <button
                           className="cyber-button cyber-chamfer-sm"
-                          onClick={() => act("approve", selectedJob.id)}
-                          disabled={actionLoading === selectedJob.id}
+                          onClick={() => act("approve", selectedJob)}
+                          disabled={actionLoading === jobRowKey(selectedJob)}
                         >
                           APPROVE
                         </button>
                         <button
                           className="cyber-button cyber-chamfer-sm cyber-button-ghost"
-                          onClick={() => act("skip", selectedJob.id)}
-                          disabled={actionLoading === selectedJob.id}
+                          onClick={() => act("skip", selectedJob)}
+                          disabled={actionLoading === jobRowKey(selectedJob)}
                         >
                           SKIP
                         </button>
                         <button
                           className="cyber-button cyber-chamfer-sm cyber-button-destructive"
-                          onClick={() => act("reject", selectedJob.id)}
-                          disabled={actionLoading === selectedJob.id}
+                          onClick={() => act("reject", selectedJob)}
+                          disabled={actionLoading === jobRowKey(selectedJob)}
                         >
                           REJECT
                         </button>

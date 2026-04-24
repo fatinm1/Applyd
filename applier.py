@@ -35,7 +35,7 @@ def run_auto_apply():
     # IMPORTANT: `store.get_all()` is capped by a small LIMIT, which can cause
     # approved jobs to fall outside the window and never be processed.
     # Fetch by status with a large limit instead.
-    approved = store.get_by_status("approved", limit=10000)
+    approved = store.get_by_status("approved", limit=10000, viewer_is_admin=True)
 
     if not approved:
         log.info("No approved jobs to apply to.")
@@ -44,6 +44,7 @@ def run_auto_apply():
     log.info(f"Auto-applying to {len(approved)} approved jobs...")
 
     for job_row in approved:
+        owner_uid = int(job_row["owner_user_id"])
         job = Job(
             id=job_row["id"], company=job_row["company"], title=job_row["title"],
             location=job_row["location"], apply_url=job_row["apply_url"],
@@ -55,9 +56,9 @@ def run_auto_apply():
         cover_letter = job_row.get("cover_letter") or generate_cover_letter(job)
         resume_path = job_row.get("resume_pdf_path") or ""
         if not resume_path:
-            resume_path = generate_tailored_resume_pdf(job)
+            resume_path = generate_tailored_resume_pdf(job, owner_user_id=owner_uid)
             # Persist so the application log always records the exact resume used.
-            store.set_job_resume_pdf(job.id, resume_path)
+            store.set_job_resume_pdf(owner_uid, job.id, resume_path)
 
         success = False
         method  = "unknown"
@@ -72,18 +73,18 @@ def run_auto_apply():
             method  = "browser"
         else:
             log.warning(f"No apply URL for {job.display} — skipping")
-            store.update_status(job.id, "skipped", notes="No apply URL")
+            store.update_status(owner_uid, job.id, "skipped", notes="No apply URL")
             continue
 
         if success:
             status = "applied"
             notes = f"Applied via {method}"
-            store.update_status(job.id, status, cover_letter=cover_letter, notes=notes)
+            store.update_status(owner_uid, job.id, status, cover_letter=cover_letter, notes=notes)
             log.info(f"  ✅ Applied: {job.display}")
         else:
             status = "skipped"
             notes = f"Apply failed via {method}"
-            store.update_status(job.id, status, notes=notes)
+            store.update_status(owner_uid, job.id, status, notes=notes)
             log.warning(f"  ❌ Failed: {job.display}")
 
         # Append to application audit log (records job description + resume used).
