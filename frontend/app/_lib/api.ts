@@ -76,6 +76,13 @@ export async function patchMeApi(payload: { notification_email: string }) {
   });
 }
 
+export async function deleteAccountApi(password: string) {
+  return apiFetchJson("/api/me/delete", {
+    method: "POST",
+    body: JSON.stringify({ password }),
+  });
+}
+
 export async function logoutApi() {
   return apiFetchJson("/api/auth/logout", { method: "POST" });
 }

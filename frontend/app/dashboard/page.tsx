@@ -6,6 +6,7 @@ import {
   approveJobApi,
   coverLetterApi,
   getAgentStateApi,
+  deleteAccountApi,
   getMeApi,
   listJobsApi,
   patchMeApi,
@@ -44,9 +45,16 @@ export default function DashboardPage() {
   const [authChecked, setAuthChecked] = useState(false);
   const [authed, setAuthed] = useState(false);
 
-  const [me, setMe] = useState<{ user_id: number; username: string; notification_email: string } | null>(null);
+  const [me, setMe] = useState<{
+    user_id: number;
+    username: string;
+    notification_email: string;
+    is_admin?: boolean;
+  } | null>(null);
   const [notifDraft, setNotifDraft] = useState("");
   const [notifSaving, setNotifSaving] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   async function refresh() {
     setLoadingJobs(true);
@@ -131,6 +139,26 @@ export default function DashboardPage() {
       setError(err?.message ?? "Could not save notification email");
     } finally {
       setNotifSaving(false);
+    }
+  }
+
+  async function deleteMyAccount() {
+    if (!deletePassword.trim()) {
+      setError("Enter your password to delete your account.");
+      return;
+    }
+    if (!globalThis.confirm("Delete your account permanently? This cannot be undone.")) return;
+    setDeleteBusy(true);
+    setError(null);
+    try {
+      await deleteAccountApi(deletePassword);
+      setDeletePassword("");
+      router.push("/login");
+    } catch (err: any) {
+      if (err?.status === 401) router.push("/login");
+      setError(err?.message ?? "Could not delete account");
+    } finally {
+      setDeleteBusy(false);
     }
   }
 
@@ -452,25 +480,57 @@ export default function DashboardPage() {
             worker sends to every user address below plus <code className="text-xs">NOTIFY_EMAIL</code> on the server.
           </p>
           {me ? (
-            <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-              <span className="text-xs text-[var(--mutedForeground)] shrink-0">@{me.username}</span>
-              <input
-                className="cyber-input flex-1 min-w-0"
-                value={notifDraft}
-                onChange={(e) => setNotifDraft(e.target.value)}
-                placeholder="you@example.com"
-                type="email"
-                autoComplete="email"
-              />
-              <button
-                type="button"
-                className="cyber-button cyber-chamfer-sm cyber-button-secondary shrink-0"
-                onClick={() => void saveNotificationEmail()}
-                disabled={notifSaving}
-              >
-                {notifSaving ? "SAVING..." : "SAVE"}
-              </button>
-            </div>
+            <>
+              <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+                <span className="text-xs text-[var(--mutedForeground)] shrink-0">@{me.username}</span>
+                <input
+                  className="cyber-input flex-1 min-w-0"
+                  value={notifDraft}
+                  onChange={(e) => setNotifDraft(e.target.value)}
+                  placeholder="you@example.com"
+                  type="email"
+                  autoComplete="email"
+                />
+                <button
+                  type="button"
+                  className="cyber-button cyber-chamfer-sm cyber-button-secondary shrink-0"
+                  onClick={() => void saveNotificationEmail()}
+                  disabled={notifSaving}
+                >
+                  {notifSaving ? "SAVING..." : "SAVE"}
+                </button>
+              </div>
+              {me.is_admin ? (
+                <p className="mt-4 text-xs text-[var(--mutedForeground)]">
+                  This is the administrator account — it cannot be deleted from the dashboard.
+                </p>
+              ) : (
+                <div className="mt-6 border-t border-[var(--border)] pt-4">
+                  <div className="text-xs uppercase tracking-[0.2em] text-red-400/90 mb-2">Delete account</div>
+                  <p className="text-sm text-[var(--mutedForeground)] mb-3">
+                    Removes your login only. The shared job queue and history stay on the server.
+                  </p>
+                  <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
+                    <input
+                      className="cyber-input flex-1 min-w-0"
+                      type="password"
+                      autoComplete="current-password"
+                      placeholder="Your password to confirm"
+                      value={deletePassword}
+                      onChange={(e) => setDeletePassword(e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="cyber-button cyber-chamfer-sm cyber-button-destructive shrink-0"
+                      disabled={deleteBusy}
+                      onClick={() => void deleteMyAccount()}
+                    >
+                      {deleteBusy ? "DELETING..." : "DELETE MY ACCOUNT"}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
           ) : (
             <div className="text-sm text-[var(--mutedForeground)]">Loading profile…</div>
           )}

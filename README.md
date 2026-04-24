@@ -99,6 +99,7 @@ Notes:
 - **CLI `agent.py`**: behaves like the background worker (all saved notification addresses + `NOTIFY_EMAIL`).
 - **Self-service accounts**: set `ALLOW_OPEN_REGISTRATION=true` in `.env` (see `env.example`) so anyone can create an account at `/register`. For a public internet deployment, consider `false` plus `REGISTRATION_INVITE_CODE` instead.
 - **After sign-up**: a short confirmation email is sent to the **notification email** you enter on `/register` (needs `NOTIFY_EMAIL` + `GMAIL_APP_PASSWORD`). Match digests and approval emails still only arrive when a scan finds new jobs above your threshold.
+- **Delete account**: non-admin users can remove their login from the dashboard (password required). The account that matches `DASHBOARD_USERNAME`, or the lowest `id` when that env is unset, is treated as **admin** and cannot be deleted.
 
 ---
 

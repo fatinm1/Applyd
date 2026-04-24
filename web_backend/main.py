@@ -103,6 +103,10 @@ class MePatchRequest(BaseModel):
     notification_email: str = ""
 
 
+class DeleteAccountRequest(BaseModel):
+    password: str
+
+
 class RejectRequest(BaseModel):
     notes: str = ""
 
@@ -270,6 +274,7 @@ def get_me(request: Request, _user: str = Depends(_require_auth)):
         "user_id": uid,
         "username": row.get("username") or "",
         "notification_email": (row.get("notification_email") or "").strip(),
+        "is_admin": store.user_is_admin(uid),
     }
 
 
@@ -285,7 +290,29 @@ def patch_me(payload: MePatchRequest, request: Request, _user: str = Depends(_re
         "user_id": uid,
         "username": (row or {}).get("username") or "",
         "notification_email": em,
+        "is_admin": store.user_is_admin(uid),
     }
+
+
+@app.post("/api/me/delete")
+def delete_my_account(payload: DeleteAccountRequest, request: Request, _user: str = Depends(_require_auth)):
+    uid = _session_user_id(request)
+    if uid is None:
+        raise HTTPException(status_code=401, detail="Session missing user id; log in again.")
+    row = store.get_user_by_id(uid)
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    if store.user_is_admin(uid):
+        raise HTTPException(status_code=403, detail="The administrator account cannot be deleted.")
+    username = str(row.get("username") or "")
+    if not (payload.password or "").strip():
+        raise HTTPException(status_code=400, detail="Password is required to delete your account.")
+    if store.verify_user_password(username, payload.password) is None:
+        raise HTTPException(status_code=400, detail="Incorrect password.")
+    if not store.delete_user_by_id(uid):
+        raise HTTPException(status_code=403, detail="Could not delete account.")
+    request.session.clear()
+    return {"ok": True}
 
 
 @app.post("/api/auth/logout")

@@ -100,6 +100,7 @@ class SQLiteJobStore:
                     username TEXT NOT NULL UNIQUE,
                     password_hash TEXT NOT NULL,
                     notification_email TEXT NOT NULL DEFAULT '',
+                    is_admin INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT DEFAULT (datetime('now'))
                 );
             """)
@@ -129,7 +130,9 @@ class SQLiteJobStore:
                 ("auto_apply_enabled", "true" if config.AUTO_APPLY_ENABLED else "false"),
             )
 
+            self._migrate_users_is_admin_sqlite(conn)
             self._bootstrap_default_user_sqlite(conn)
+            self._ensure_admin_flags_sqlite(conn)
 
             # Backfill the application log for jobs already marked as `applied`
             # before this feature was introduced.
@@ -190,6 +193,44 @@ class SQLiteJobStore:
                         ),
                     )
 
+    def _migrate_users_is_admin_sqlite(self, conn):
+        try:
+            ucols = [r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
+        except sqlite3.OperationalError:
+            return
+        if not ucols:
+            return
+        if "is_admin" not in ucols:
+            conn.execute("ALTER TABLE users ADD COLUMN is_admin INTEGER NOT NULL DEFAULT 0")
+
+    def _ensure_admin_flags_sqlite(self, conn):
+        """Exactly one admin when possible: env username, else lowest user id."""
+        try:
+            n = conn.execute("SELECT COUNT(*) as c FROM users").fetchone()
+            if not n or int(n["c"]) == 0:
+                return
+        except sqlite3.OperationalError:
+            return
+
+        admin_u = (config.DASHBOARD_USERNAME or "").strip()
+        if admin_u:
+            conn.execute("UPDATE users SET is_admin=0")
+            conn.execute(
+                "UPDATE users SET is_admin=1 WHERE username = ? COLLATE NOCASE",
+                (admin_u,),
+            )
+            row = conn.execute("SELECT COUNT(*) as c FROM users WHERE is_admin=1").fetchone()
+            if not row or int(row["c"]) == 0:
+                r2 = conn.execute("SELECT MIN(id) as mid FROM users").fetchone()
+                if r2 and r2["mid"] is not None:
+                    conn.execute("UPDATE users SET is_admin=1 WHERE id = ?", (int(r2["mid"]),))
+        else:
+            row = conn.execute("SELECT COUNT(*) as c FROM users WHERE is_admin=1").fetchone()
+            if not row or int(row["c"]) == 0:
+                r2 = conn.execute("SELECT MIN(id) as mid FROM users").fetchone()
+                if r2 and r2["mid"] is not None:
+                    conn.execute("UPDATE users SET is_admin=1 WHERE id = ?", (int(r2["mid"]),))
+
     def _bootstrap_default_user_sqlite(self, conn):
         from auth_password import hash_password
 
@@ -203,7 +244,7 @@ class SQLiteJobStore:
         h = hash_password(p)
         em = (config.NOTIFY_EMAIL or "").strip()
         conn.execute(
-            "INSERT INTO users (username, password_hash, notification_email) VALUES (?,?,?)",
+            "INSERT INTO users (username, password_hash, notification_email, is_admin) VALUES (?,?,?,1)",
             (u, h, em),
         )
 
@@ -245,10 +286,32 @@ class SQLiteJobStore:
         em = (notification_email or "").strip()
         with self._conn() as conn:
             cur = conn.execute(
-                "INSERT INTO users (username, password_hash, notification_email) VALUES (?,?,?)",
+                "INSERT INTO users (username, password_hash, notification_email, is_admin) VALUES (?,?,?,0)",
                 (u, h, em),
             )
             return int(cur.lastrowid)
+
+    def user_is_admin(self, user_id: int) -> bool:
+        row = self.get_user_by_id(int(user_id))
+        if not row:
+            return False
+        try:
+            if int(row.get("is_admin") or 0) == 1:
+                return True
+        except (TypeError, ValueError):
+            pass
+        admin_u = (config.DASHBOARD_USERNAME or "").strip()
+        if admin_u and str(row.get("username") or "").strip().lower() == admin_u.lower():
+            return True
+        return False
+
+    def delete_user_by_id(self, user_id: int) -> bool:
+        """Delete user row if they are not the admin. Returns True if a row was removed."""
+        if self.user_is_admin(int(user_id)):
+            return False
+        with self._conn() as conn:
+            cur = conn.execute("DELETE FROM users WHERE id = ?", (int(user_id),))
+            return cur.rowcount > 0
 
     def update_user_notification_email(self, user_id: int, notification_email: str) -> None:
         em = (notification_email or "").strip()
@@ -725,11 +788,14 @@ class MySQLJobStore:
                     username VARCHAR(255) NOT NULL UNIQUE,
                     password_hash VARCHAR(512) NOT NULL,
                     notification_email VARCHAR(320) NOT NULL DEFAULT '',
+                    is_admin TINYINT(1) NOT NULL DEFAULT 0,
                     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
                 """
             )
+            self._migrate_users_is_admin_mysql(cur)
             self._bootstrap_default_user_mysql(cur)
+            self._ensure_admin_flags_mysql(cur)
 
             # Migrations for older MySQL schemas.
             def _add_col(sql: str):
@@ -742,6 +808,46 @@ class MySQLJobStore:
             _add_col("ALTER TABLE jobs ADD COLUMN mail_action_token TEXT NULL")
             _add_col("ALTER TABLE jobs ADD COLUMN mail_action_expires_at DATETIME NULL")
             _add_col("ALTER TABLE jobs ADD COLUMN mail_action_sent_at DATETIME NULL")
+
+    def _migrate_users_is_admin_mysql(self, cur):
+        try:
+            cur.execute(
+                """
+                SELECT COUNT(*) as c FROM information_schema.COLUMNS
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'users' AND COLUMN_NAME = 'is_admin'
+                """
+            )
+            row = cur.fetchone()
+            if row and int(row["c"]) == 0:
+                cur.execute("ALTER TABLE users ADD COLUMN is_admin TINYINT(1) NOT NULL DEFAULT 0")
+        except Exception:
+            try:
+                cur.execute("ALTER TABLE users ADD COLUMN is_admin TINYINT(1) NOT NULL DEFAULT 0")
+            except Exception:
+                pass
+
+    def _ensure_admin_flags_mysql(self, cur):
+        cur.execute("SELECT COUNT(*) as c FROM users")
+        row = cur.fetchone()
+        if not row or int(row["c"]) == 0:
+            return
+
+        admin_u = (config.DASHBOARD_USERNAME or "").strip()
+        if admin_u:
+            cur.execute("UPDATE users SET is_admin=0")
+            cur.execute(
+                "UPDATE users SET is_admin=1 WHERE LOWER(username) = LOWER(%s)",
+                (admin_u,),
+            )
+            cur.execute("SELECT COUNT(*) as c FROM users WHERE is_admin=1")
+            row2 = cur.fetchone()
+            if not row2 or int(row2["c"]) == 0:
+                cur.execute("UPDATE users SET is_admin=1 ORDER BY id ASC LIMIT 1")
+        else:
+            cur.execute("SELECT COUNT(*) as c FROM users WHERE is_admin=1")
+            row2 = cur.fetchone()
+            if not row2 or int(row2["c"]) == 0:
+                cur.execute("UPDATE users SET is_admin=1 ORDER BY id ASC LIMIT 1")
 
     def _bootstrap_default_user_mysql(self, cur):
         from auth_password import hash_password
@@ -757,7 +863,7 @@ class MySQLJobStore:
         h = hash_password(p)
         em = (config.NOTIFY_EMAIL or "").strip()
         cur.execute(
-            "INSERT INTO users (username, password_hash, notification_email) VALUES (%s,%s,%s)",
+            "INSERT INTO users (username, password_hash, notification_email, is_admin) VALUES (%s,%s,%s,1)",
             (u, h, em),
         )
 
@@ -799,10 +905,32 @@ class MySQLJobStore:
         em = (notification_email or "").strip()
         with self._conn() as cur:
             cur.execute(
-                "INSERT INTO users (username, password_hash, notification_email) VALUES (%s,%s,%s)",
+                "INSERT INTO users (username, password_hash, notification_email, is_admin) VALUES (%s,%s,%s,0)",
                 (u, h, em),
             )
             return int(cur.lastrowid)
+
+    def user_is_admin(self, user_id: int) -> bool:
+        row = self.get_user_by_id(int(user_id))
+        if not row:
+            return False
+        try:
+            v = row.get("is_admin")
+            if v is True or int(v) == 1:
+                return True
+        except (TypeError, ValueError):
+            pass
+        admin_u = (config.DASHBOARD_USERNAME or "").strip()
+        if admin_u and str(row.get("username") or "").strip().lower() == admin_u.lower():
+            return True
+        return False
+
+    def delete_user_by_id(self, user_id: int) -> bool:
+        if self.user_is_admin(int(user_id)):
+            return False
+        with self._conn() as cur:
+            cur.execute("DELETE FROM users WHERE id = %s", (int(user_id),))
+            return cur.rowcount > 0
 
     def update_user_notification_email(self, user_id: int, notification_email: str) -> None:
         em = (notification_email or "").strip()
