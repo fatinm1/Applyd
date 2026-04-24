@@ -111,13 +111,13 @@ export default function RegisterPage() {
 
         {!registrationDone && !status ? (
           <div className="text-sm text-[var(--mutedForeground)] mb-6">Loading…</div>
-        ) : !registrationDone && !status.allowed ? (
+        ) : !registrationDone && status && !status.allowed ? (
           <div className="text-sm text-[var(--mutedForeground)] mb-6">
             Registration is turned off on this server. Ask the operator to set{" "}
             <code className="text-xs">ALLOW_OPEN_REGISTRATION=true</code> or a{" "}
             <code className="text-xs">REGISTRATION_INVITE_CODE</code> in the environment.
           </div>
-        ) : !registrationDone && status ? (
+        ) : !registrationDone && status && status.allowed ? (
           <>
             <p className="text-sm text-[var(--mutedForeground)] mb-6">
               {status.open_registration
