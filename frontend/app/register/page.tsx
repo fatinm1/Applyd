@@ -78,8 +78,8 @@ export default function RegisterPage() {
           <>
             <p className="text-sm text-[var(--mutedForeground)] mb-6">
               {status.open_registration
-                ? "Create your own account. Your notification email is where we send match digests and approval requests when you run scans from the dashboard."
-                : "Create an account using the invite code from your server operator. Your notification email receives match digests and approval requests when you run scans from the dashboard."}
+                ? "Create your own account. Sign-up confirmation and job alerts go to your notification email below (or to your username if it is a full email address and you leave the field blank)."
+                : "Create an account using the invite code from your server operator. Confirmation and job alerts use your notification email, or your username when it is an email address."}
             </p>
 
             <form onSubmit={onSubmit} className="space-y-4">
@@ -89,7 +89,7 @@ export default function RegisterPage() {
                   className="cyber-input"
                   value={username}
                   onChange={(e) => setUsername(e.target.value)}
-                  placeholder="username (min 2 chars)"
+                  placeholder="username or your email"
                   autoComplete="username"
                 />
               </div>

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import shutil
 import threading
 from typing import Any, Optional
@@ -233,20 +234,19 @@ def register(payload: RegisterRequest):
     if len(u) < 2 or len(payload.password) < 6:
         raise HTTPException(status_code=400, detail="Username (min 2 chars) and password (min 6 chars) required.")
 
+    notif = _notification_email_for_new_user(u, payload.notification_email)
+
     try:
-        uid = store.create_user(u, payload.password, payload.notification_email)
+        uid = store.create_user(u, payload.password, notif)
     except Exception as e:
         msg = str(e).lower()
         if "unique" in msg or "duplicate" in msg:
             raise HTTPException(status_code=409, detail="Username already taken")
         raise HTTPException(status_code=400, detail=str(e))
 
-    # Confirmation mail (only if they gave an address and Gmail is configured).
+    # Confirmation mail (only if we have a destination and Gmail is configured).
     try:
-        Notifier().send_registration_welcome(
-            to_email=(payload.notification_email or "").strip(),
-            username=u,
-        )
+        Notifier().send_registration_welcome(to_email=notif, username=u)
     except Exception as e:
         log.warning("Registration welcome email skipped: %s", e)
 
@@ -260,6 +260,20 @@ def _validate_notification_email(raw: str) -> str:
     if "@" not in em or "." not in em.split("@", 1)[-1]:
         raise HTTPException(status_code=400, detail="Invalid notification_email")
     return em
+
+
+# If the user only fills "username" with their campus/personal email, still persist and mail it.
+_REGISTRATION_EMAILISH = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$", re.IGNORECASE)
+
+
+def _notification_email_for_new_user(username: str, notification_email: str) -> str:
+    n = (notification_email or "").strip()
+    if n:
+        return n
+    u = (username or "").strip()
+    if _REGISTRATION_EMAILISH.match(u):
+        return u
+    return ""
 
 
 @app.get("/api/me")
