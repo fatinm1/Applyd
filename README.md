@@ -4,7 +4,7 @@ Applyd polls public GitHub job boards, scores listings against a configurable pr
 
 ## Default sources
 
-Repositories are listed in `agent.py` (`REPOS`). By default:
+Repositories are listed in `agent.py` (`REPOS`) By default:
 
 - [SimplifyJobs/New-Grad-Positions](https://github.com/SimplifyJobs/New-Grad-Positions)
 - [pittcsc/Summer2025-Internships](https://github.com/pittcsc/Summer2025-Internships)
