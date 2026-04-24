@@ -108,4 +108,4 @@ scripts/            # e.g. SQLite → MySQL migration
 
 - The first index pass per repository ingests existing rows **without** sending notifications; later runs only notify on **new** postings.
 - Raising `MATCH_THRESHOLD` reduces noise; lower it once you validate quality.
-- Add or change sources by editing `REPOS` in `agent.py`.
+- Add or change sources by editing `REPOS` in `agent.py`
