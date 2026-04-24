@@ -98,6 +98,7 @@ Notes:
 - **Web dashboard**: each logged-in user has a **notification email** (set on the dashboard after login). When you click **Run scan now**, digests and approval emails go **only to that user’s** address (or fall back to `NOTIFY_EMAIL` if they left it blank). The **background worker** sends to **every** user’s notification address plus `NOTIFY_EMAIL` (deduped).
 - **CLI `agent.py`**: behaves like the background worker (all saved notification addresses + `NOTIFY_EMAIL`).
 - **Self-service accounts**: set `ALLOW_OPEN_REGISTRATION=true` in `.env` (see `env.example`) so anyone can create an account at `/register`. For a public internet deployment, consider `false` plus `REGISTRATION_INVITE_CODE` instead.
+- **After sign-up**: a short confirmation email is sent to the **notification email** you enter on `/register` (needs `NOTIFY_EMAIL` + `GMAIL_APP_PASSWORD`). Match digests and approval emails still only arrive when a scan finds new jobs above your threshold.
 
 ---
 

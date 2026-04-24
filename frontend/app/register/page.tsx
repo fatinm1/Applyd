@@ -110,7 +110,7 @@ export default function RegisterPage() {
                   className="cyber-input"
                   value={notificationEmail}
                   onChange={(e) => setNotificationEmail(e.target.value)}
-                  placeholder="notification email (where we send matches)"
+                  placeholder="your email (required for sign-up confirmation & job alerts)"
                   type="email"
                   autoComplete="email"
                 />

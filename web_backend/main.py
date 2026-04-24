@@ -21,6 +21,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from agent import REPOS, run_scan_cycle_and_apply
 from config import config
+from notifier import Notifier
 from matcher import JobMatcher, generate_cover_letter, _fallback_cover_letter
 from parser import Job, JobParser
 from watcher import GitHubWatcher
@@ -235,6 +236,15 @@ def register(payload: RegisterRequest):
         if "unique" in msg or "duplicate" in msg:
             raise HTTPException(status_code=409, detail="Username already taken")
         raise HTTPException(status_code=400, detail=str(e))
+
+    # Confirmation mail (only if they gave an address and Gmail is configured).
+    try:
+        Notifier().send_registration_welcome(
+            to_email=(payload.notification_email or "").strip(),
+            username=u,
+        )
+    except Exception as e:
+        log.warning("Registration welcome email skipped: %s", e)
 
     return {"ok": True, "user_id": uid}
 

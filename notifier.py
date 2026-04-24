@@ -274,6 +274,46 @@ Attachments:
         except Exception as e:
             log.error(f"Apply notification email failed: {e}")
 
+    def send_registration_welcome(self, *, to_email: str, username: str) -> None:
+        """
+        Optional confirmation after /register when the user supplied a notification address.
+        Job digests / approval mail are still only sent when scans find matches.
+        """
+        em = (to_email or "").strip()
+        if not em or not self._smtp_configured():
+            return
+
+        subject = f"Applyd — account created ({username})"
+        plain = (
+            f'Your Applyd account "{username}" was created.\n\n'
+            f"We will send match digests and approval-request emails to {em} when scans find "
+            "new jobs above your threshold. Log in to the dashboard to review settings.\n\n"
+            "If you did not sign up, you can ignore this message.\n"
+        )
+        html = f"""
+        <html><body style="font-family:system-ui,sans-serif;color:#111;max-width:560px;margin:0 auto;padding:24px;line-height:1.5">
+          <h2 style="margin-top:0">Account created</h2>
+          <p>Your Applyd login is <strong>{username}</strong>.</p>
+          <p>Match digests and approval emails will go to <strong>{em}</strong> when the agent finds new matches.</p>
+          <p style="color:#6b7280;font-size:13px">If you did not create this account, ignore this email.</p>
+        </body></html>
+        """
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = config.NOTIFY_EMAIL
+        msg["To"] = em
+        msg.attach(MIMEText(plain, "plain"))
+        msg.attach(MIMEText(html, "html"))
+
+        try:
+            with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+                server.login(config.NOTIFY_EMAIL, config.GMAIL_APP_PASSWORD)
+                server.send_message(msg)
+            log.info("Registration welcome email sent to %s", em)
+        except Exception as e:
+            log.warning("Registration welcome email failed: %s", e)
+
     # ── Slack ─────────────────────────────────────────────────────────────
 
     def _send_slack(self, matches: list):
