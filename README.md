@@ -7,7 +7,6 @@ Applyd polls public GitHub job boards, scores listings against a configurable pr
 Repositories are listed in `agent.py` (`REPOS`) By default:
 
 - [SimplifyJobs/New-Grad-Positions](https://github.com/SimplifyJobs/New-Grad-Positions)
-- [pittcsc/Summer2025-Internships](https://github.com/pittcsc/Summer2025-Internships)
 - [speedyapply/2026-SWE-College-Jobs](https://github.com/speedyapply/2026-SWE-College-Jobs)
 
 ## Installation
@@ -109,3 +108,7 @@ scripts/            # e.g. SQLite → MySQL migration
 - The first index pass per repository ingests existing rows **without** sending notifications; later runs only notify on **new** postings.
 - Raising `MATCH_THRESHOLD` reduces noise; lower it once you validate quality.
 - Add or change sources by editing `REPOS` in `agent.py`
+
+## Reliability and contribution scope
+
+The default sources exclude the stale 2025 internship feed. Review source freshness before relying on a scan. Run `python -m pytest tests -q` to verify account isolation, rescans preserving decisions, and signed owner-bound approval links with temporary SQLite storage. Tests do not submit applications or call model providers. Browser adapters remain subject to upstream form changes; do not claim universal application coverage or measured cost savings without a reproducible comparison.
